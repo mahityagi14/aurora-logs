@@ -21,8 +21,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
 # Final stage
 FROM alpine:3.22
 
-# Install ca-certificates, tzdata, and tini for proper signal handling
-RUN apk --no-cache add ca-certificates tzdata tini
+# Install ca-certificates and tzdata
+RUN apk --no-cache add ca-certificates tzdata
 
 # Create non-root user
 RUN adduser -D -u 1000 appuser
@@ -40,8 +40,6 @@ ENV GOMAXPROCS=2
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["./processor", "-health"]
 
-# Use tini as PID 1 for proper signal handling
-ENTRYPOINT ["/sbin/tini", "--"]
-
 # Use exec form for proper signal forwarding
-CMD ["./processor"]
+# The Go binary can handle signals directly
+ENTRYPOINT ["./processor"]
