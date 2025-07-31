@@ -50,7 +50,7 @@ locals {
     }
     openobserve = {
       name   = "openobserve"
-      image  = "public.ecr.aws/zinclabs/openobserve:v0.15.0-rc4"
+      image  = "${data.aws_ecr_repository.existing_aurora_log_system.repository_url}:openobserve-latest"
       cpu    = 1792  # 1.75 vCPUs
       memory = 3584  # 3.5 GB (leaving some memory for ECS agent)
       count  = 1
