@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-lb
+  namespace: aurora-logs
+  annotations:
+    # AWS Internal Load Balancer
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    # Session affinity for consistent processing
+    service.beta.kubernetes.io/aws-load-balancer-target-group-attributes: stickiness.enabled=true,stickiness.type=source_ip
+spec:
+  type: LoadBalancer
+  selector:
+    app: processor
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600  # 1 hour stickiness
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-lb
+  namespace: aurora-logs
+  annotations:
+    # AWS Internal Load Balancer
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: discovery
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+# Headless service for direct pod access
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-headless
+  namespace: aurora-logs
+spec:
+  clusterIP: None
+  selector:
+    app: processor
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+# Cost-optimized NodePort services for internal access
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-nodeport
+  namespace: aurora-logs
+spec:
+  type: NodePort
+  selector:
+    app: processor
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30080  # Fixed NodePort for predictable access

@@ -1,0 +1,127 @@
+# POC Environment Values for Aurora Log System
+# Optimized for minimal cost - $89-150/month
+
+# AWS Configuration
+awsRegion: "us-east-1"
+awsAccountId: "072006186126"
+
+# ECR Registry
+ecrRegistry: "072006186126.dkr.ecr.us-east-1.amazonaws.com"
+
+# Valkey Cache Configuration - Minimal for POC
+valkeyCacheEndpoint: "aurora-logs-poc-valkey.nnm633.ng.0001.use1.cache.amazonaws.com:6379"
+
+# S3 Configuration - Using free tier
+s3BucketName: "company-aurora-logs-poc"  # Keep under 5GB for free tier
+s3K8sLogsBucket: "aurora-k8s-logs-072006186126"
+
+# OpenObserve Configuration
+openObserveAdminEmail: "admin@yourcompany.com"
+openObserveDataRetentionDays: 7  # Reduced retention for POC
+
+# No Ingress/ALB for POC - Use NodePort
+useNodePort: true
+nodePortHttp: 30080
+nodePortGrpc: 30081
+
+# Minimal Replicas for POC
+kafkaReplicas: 1  # Single instance
+discoveryReplicas: 1  # Single instance
+processorReplicas: 1  # Scale up to 2 during testing
+openObserveReplicas: 1  # Single instance
+valkeyReplicas: 0  # Use external ElastiCache
+
+# Resource Limits - Minimal for POC
+discoveryResources:
+  requests:
+    cpu: "50m"
+    memory: "128Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+processorResources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+kafkaResources:
+  requests:
+    cpu: "200m"
+    memory: "512Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+
+openObserveResources:
+  requests:
+    cpu: "200m"
+    memory: "512Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+
+# Storage Configuration - Minimal
+openObserveStorageSize: "10Gi"
+kafkaStorageSize: "10Gi"
+storageClass: "gp3"  # Cheaper than gp2
+
+# HPA Configuration - Conservative scaling
+processorHPA:
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilization: 80
+  targetMemoryUtilization: 80
+
+discoveryHPA:
+  enabled: false  # No autoscaling for single instance
+
+# Node Affinity - Use Graviton ARM64 instances
+nodeSelector:
+  kubernetes.io/arch: "arm64"
+  node.kubernetes.io/instance-type: "t4g.small"
+
+# Cost Optimization Features
+enableSpotNodes: false  # Not for critical POC components
+enableScheduledScaling: true  # Scale down at night
+offPeakReplicas:
+  processor: 0  # Stop at night
+  discovery: 1  # Keep running
+
+# DynamoDB Configuration - Free tier
+dynamoDBReadCapacity: 5  # Within free tier (25 RCU free)
+dynamoDBWriteCapacity: 5  # Within free tier (25 WCU free)
+
+# Monitoring - Minimal
+enableDetailedMetrics: false
+enableTracking: false
+logLevel: "info"
+
+# Batch Processing
+processorBatchSize: 10  # Smaller batches for POC
+processorBatchTimeout: "30s"
+
+# Network Policies
+enableNetworkPolicies: true
+allowedCIDRs:
+  - "0.0.0.0/0"  # Open for POC testing
+
+# Lifecycle Management
+enableAutoShutdown: true  # Shutdown during weekends
+shutdownSchedule: "0 20 * * 5"  # Friday 8 PM
+startupSchedule: "0 8 * * 1"    # Monday 8 AM
+
+# Jenkins Integration
+jenkinsEnabled: true
+jenkinsUrl: "http://jenkins.poc.internal:8080"
+
+# Feature Flags
+features:
+  enableCaching: true
+  enableCompression: true
+  enableDeduplication: true
+  enableParallelProcessing: false  # Single thread for POC
+  enableAdvancedMetrics: false

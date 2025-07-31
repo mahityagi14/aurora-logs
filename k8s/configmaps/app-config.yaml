@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: aurora-logs
+data:
+  INSTANCE_TABLE: "aurora-instance-metadata"
+  TRACKING_TABLE: "aurora-log-file-tracking"
+  JOBS_TABLE: "aurora-log-processing-jobs"
+  S3_BUCKET: "company-aurora-logs-poc"
+  LOG_LEVEL: "INFO"
+  AWS_REGION: "us-east-1"
+  OPENOBSERVE_URL: "http://openobserve-service.aurora-logs.svc.cluster.local:5080"
+  # OpenObserve credentials moved to secret
+  KAFKA_BROKERS: "kafka-service.aurora-logs.svc.cluster.local:9092"
+  VALKEY_URL: "redis://aurora-logs-poc-valkey.nnm633.ng.0001.use1.cache.amazonaws.com:6379"  # Used by Discovery service only for RDS API caching
+  SHARD_ID: "0"
+  TOTAL_SHARDS: "1"
+  RATE_LIMIT_PER_SEC: "100"
+  MAX_CONCURRENCY: "5"
+  CONSUMER_GROUP: "aurora-processor-group"
+  DISCOVERY_INTERVAL_MIN: "5"

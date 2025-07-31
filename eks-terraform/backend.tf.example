@@ -1,0 +1,26 @@
+# Backend configuration for Terraform state
+# Rename this file to backend.tf and update values
+
+terraform {
+  backend "s3" {
+    # S3 bucket for state storage (must be created beforehand)
+    bucket = "your-company-terraform-state"
+    
+    # State file path
+    key    = "aurora-log-system/terraform.tfstate"
+    
+    # AWS region
+    region = "us-east-1"
+    
+    # Enable encryption
+    encrypt = true
+    
+    # DynamoDB table for state locking (must be created beforehand)
+    dynamodb_table = "terraform-state-lock"
+    
+    # Prevent accidental state deletion
+    lifecycle {
+      prevent_destroy = true
+    }
+  }
+}

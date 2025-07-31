@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graceful-shutdown-config
+  namespace: aurora-logs
+data:
+  # Graceful shutdown configuration
+  SHUTDOWN_TIMEOUT_SECONDS: "30"
+  DRAIN_TIMEOUT_SECONDS: "25"
+  
+  # Pre-stop hook script
+  prestop.sh: |
+    #!/bin/sh
+    set -e
+    
+    echo "Starting graceful shutdown..."
+    
+    # Signal the application to start draining
+    if [ -f /tmp/shutdown ]; then
+      touch /tmp/shutdown
+    fi
+    
+    # Wait for ongoing requests to complete
+    sleep ${DRAIN_TIMEOUT_SECONDS:-25}
+    
+    echo "Graceful shutdown complete"

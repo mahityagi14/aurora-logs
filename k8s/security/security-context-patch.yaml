@@ -1,0 +1,42 @@
+# Security context patches for all deployments
+# Apply with: kubectl patch deployment <name> -n aurora-logs --patch-file security-context-patch.yaml
+
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: discovery
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      - name: processor
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      - name: kafka
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Kafka needs to write to disk
+          capabilities:
+            drop:
+            - ALL
+      - name: openobserve
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # OpenObserve needs to write to disk
+          capabilities:
+            drop:
+            - ALL

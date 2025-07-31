@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: aurora-logs
+spec:
+  replicas: 3  # Multiple instances for HA and throughput
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+    spec:
+      serviceAccountName: processor-sa
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: processor
+        image: [account-id].dkr.ecr.[region].amazonaws.com/aurora-log-system:processor-latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - configMapRef:
+            name: app-config
+        env:
+        - name: OPENOBSERVE_USER
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-email
+        - name: OPENOBSERVE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-password
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          exec:
+            command:
+            - "./processor"
+            - "-health"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - "./processor"
+            - "-health"
+          initialDelaySeconds: 10
+          periodSeconds: 10

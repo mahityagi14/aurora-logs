@@ -1,0 +1,10 @@
+# Exclude Terraform generated files and large providers
+.terraform/
+*/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars
+tfplan*
+*.log
+*.fail

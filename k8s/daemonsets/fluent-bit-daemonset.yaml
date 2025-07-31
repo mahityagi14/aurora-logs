@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: fluent-bit
+  labels:
+    k8s-app: fluent-bit-logging
+spec:
+  selector:
+    matchLabels:
+      k8s-app: fluent-bit-logging
+  template:
+    metadata:
+      labels:
+        k8s-app: fluent-bit-logging
+    spec:
+      serviceAccountName: fluent-bit
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fluent-bit
+        image: fluent/fluent-bit:4.0.5  # Latest as of July 2025
+        imagePullPolicy: Always
+        env:
+        - name: OPENOBSERVE_AUTH
+          value: "Basic YWRtaW5AcG9jLmNvbTphZG1pbjEyMw=="  # Base64 of admin@poc.com:admin123
+        resources:
+          limits:
+            memory: 200Mi
+            cpu: 200m
+          requests:
+            memory: 100Mi
+            cpu: 100m
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+        - name: runlogjournal
+          mountPath: /run/log/journal
+          readOnly: true
+        - name: fluent-bit-state
+          mountPath: /var/fluent-bit/state
+        - name: fluent-bit-scripts
+          mountPath: /fluent-bit/scripts
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+          items:
+          - key: fluent-bit.conf
+            path: fluent-bit.conf
+          - key: parsers.conf
+            path: parsers.conf
+      - name: fluent-bit-scripts
+        configMap:
+          name: fluent-bit-config
+          items:
+          - key: filters.lua
+            path: filters.lua
+      - name: runlogjournal
+        hostPath:
+          path: /run/log/journal
+      - name: fluent-bit-state
+        hostPath:
+          path: /var/fluent-bit/state
+          type: DirectoryOrCreate
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit-role
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit-role
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: fluent-bit

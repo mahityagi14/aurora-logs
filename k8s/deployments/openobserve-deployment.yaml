@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openobserve
+  namespace: aurora-logs
+spec:
+  replicas: 1  # POC: 1; Production: 3+
+  selector:
+    matchLabels:
+      app: openobserve
+  template:
+    metadata:
+      labels:
+        app: openobserve
+    spec:
+      serviceAccountName: openobserve-sa
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: openobserve
+        image: [account-id].dkr.ecr.[region].amazonaws.com/aurora-log-system:openobserve-latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - containerPort: 5080
+          name: http
+        env:
+        - name: ZO_ROOT_USER_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-email
+        - name: ZO_ROOT_USER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-password
+        - name: AWS_REGION
+          value: "[region]"
+        - name: ZO_S3_BUCKET_NAME
+          value: "company-aurora-logs-poc"
+        - name: ZO_MEMORY_CACHE_MAX_SIZE
+          value: "2048"
+        - name: ZO_QUERY_THREAD_NUM
+          value: "4"
+        # Log retention configuration - 90 days
+        - name: ZO_RETENTION_PERIOD
+          value: "90d"
+        - name: ZO_COMPACT_DATA_RETENTION_DAYS
+          value: "90"
+        - name: ZO_DELETION_TIME
+          value: "02:00"
+        - name: ZO_DELETION_BATCH_SIZE
+          value: "10000"
+        # Performance optimizations for large volumes
+        - name: ZO_BULK_INSERT_MAX_SIZE
+          value: "10485760"  # 10MB
+        - name: ZO_SEARCH_MAX_BUCKETS
+          value: "10000"
+        - name: ZO_CONCURRENT_SEARCH_REQUESTS
+          value: "10"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 5080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 5080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: openobserve-data-pvc
