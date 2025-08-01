@@ -24,11 +24,30 @@ resource "aws_ecs_task_definition" "discovery" {
         { name = "JOBS_TABLE", value = local.dynamodb_tables.jobs },
         { name = "S3_BUCKET", value = local.s3_buckets.aurora_logs },
         { name = "KAFKA_BROKERS", value = "kafka.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:9092" },
-        { name = "VALKEY_URL", value = "redis://${data.aws_elasticache_replication_group.existing_valkey.primary_endpoint_address}" },
+        { name = "VALKEY_PORT", value = "6379" },
+        { name = "VALKEY_URL", value = "redis://${data.aws_elasticache_replication_group.existing_valkey.primary_endpoint_address}:6379" },
         { name = "LOG_LEVEL", value = "INFO" },
         { name = "DISCOVERY_INTERVAL_MIN", value = "5" },
         { name = "RATE_LIMIT_PER_SEC", value = "100" },
-        { name = "MAX_CONCURRENCY", value = "5" }
+        { name = "MAX_CONCURRENCY", value = "5" },
+        # Cache TTL configurations (in seconds)
+        { name = "CACHE_TTL_CLUSTERS", value = "300" },  # 5 minutes
+        { name = "CACHE_TTL_INSTANCES", value = "300" }, # 5 minutes  
+        { name = "CACHE_TTL_LOGFILES", value = "60" },   # 1 minute
+        # DynamoDB TTL configuration (in days)
+        { name = "DYNAMODB_TTL_DAYS", value = "7" },
+        # Go runtime configuration
+        { name = "GOMAXPROCS", value = "2" },
+        # Service ports
+        { name = "SERVICE_PORT", value = "8080" },
+        { name = "HEALTH_CHECK_PORT", value = "8080" },
+        # Health check configuration
+        { name = "HEALTH_CHECK_INTERVAL", value = "30" },
+        { name = "HEALTH_CHECK_TIMEOUT", value = "5" },
+        { name = "HEALTH_CHECK_START_PERIOD", value = "30" },
+        { name = "HEALTH_CHECK_RETRIES", value = "3" },
+        # Container configuration
+        { name = "USER_ID", value = "1000" }
       ]
       
       logConfiguration = {
@@ -68,6 +87,13 @@ resource "aws_ecs_service" "discovery" {
     expression = "task:group == service:discovery"
   }
 
+  # Service Discovery configuration
+  service_registries {
+    registry_arn = aws_service_discovery_service.discovery.arn
+  }
+
+  depends_on = [aws_service_discovery_service.discovery]
+
   tags = local.common_tags
 }
 
@@ -99,7 +125,22 @@ resource "aws_ecs_task_definition" "processor" {
         { name = "LOG_LEVEL", value = "INFO" },
         { name = "CONSUMER_GROUP", value = "aurora-processor-group" },
         { name = "SHARD_ID", value = "0" },
-        { name = "TOTAL_SHARDS", value = "1" }
+        { name = "TOTAL_SHARDS", value = "1" },
+        { name = "MAX_CONCURRENCY", value = "10" },
+        { name = "BATCH_SIZE", value = "100" },
+        { name = "BATCH_TIMEOUT_SEC", value = "5" },
+        # Go runtime configuration
+        { name = "GOMAXPROCS", value = "2" },
+        # Service ports
+        { name = "SERVICE_PORT", value = "8081" },
+        { name = "HEALTH_CHECK_PORT", value = "8081" },
+        # Health check configuration
+        { name = "HEALTH_CHECK_INTERVAL", value = "30" },
+        { name = "HEALTH_CHECK_TIMEOUT", value = "5" },
+        { name = "HEALTH_CHECK_START_PERIOD", value = "30" },
+        { name = "HEALTH_CHECK_RETRIES", value = "3" },
+        # Container configuration
+        { name = "USER_ID", value = "1000" }
       ]
       
       secrets = [
@@ -144,6 +185,13 @@ resource "aws_ecs_service" "processor" {
     type = "distinctInstance"
   }
 
+  # Service Discovery configuration
+  service_registries {
+    registry_arn = aws_service_discovery_service.processor.arn
+  }
+
+  depends_on = [aws_service_discovery_service.processor]
+
   tags = local.common_tags
 }
 
@@ -173,6 +221,8 @@ resource "aws_ecs_task_definition" "kafka" {
         { name = "KAFKA_CFG_NODE_ID", value = "1" },
         { name = "KAFKA_CFG_PROCESS_ROLES", value = "broker,controller" },
         { name = "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS", value = "1@kafka-service:9093" },
+        { name = "KAFKA_BROKER_PORT", value = "9092" },
+        { name = "KAFKA_CONTROLLER_PORT", value = "9093" },
         { name = "KAFKA_CFG_LISTENERS", value = "PLAINTEXT://:9092,CONTROLLER://:9093" },
         { name = "KAFKA_CFG_ADVERTISED_LISTENERS", value = "PLAINTEXT://kafka.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:9092" },
         { name = "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP", value = "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" },
@@ -182,6 +232,7 @@ resource "aws_ecs_task_definition" "kafka" {
         { name = "KAFKA_KRAFT_CLUSTER_ID", value = "aurora-logs-kafka-cluster" },
         { name = "KAFKA_CFG_LOG_DIRS", value = "/bitnami/kafka/data" },
         { name = "KAFKA_CFG_METADATA_LOG_DIR", value = "/bitnami/kafka/metadata" },
+        { name = "KAFKA_HEAP_SIZE", value = "2G" },
         { name = "KAFKA_HEAP_OPTS", value = "-Xmx2G -Xms2G" }
       ]
       
@@ -236,6 +287,13 @@ resource "aws_ecs_service" "kafka" {
     type = "distinctInstance"
   }
 
+  # Service Discovery configuration
+  service_registries {
+    registry_arn = aws_service_discovery_service.kafka.arn
+  }
+
+  depends_on = [aws_service_discovery_service.kafka]
+
   tags = local.common_tags
 }
 
@@ -266,6 +324,8 @@ resource "aws_ecs_task_definition" "openobserve" {
         { name = "ZO_LOCAL_MODE", value = "true" },
         { name = "ZO_HTTP_PORT", value = "5080" },
         { name = "ZO_GRPC_PORT", value = "5081" },
+        { name = "OPENOBSERVE_HTTP_PORT", value = "5080" },
+        { name = "OPENOBSERVE_GRPC_PORT", value = "5081" },
         { name = "ZO_DATA_DIR", value = "/data" },
         { name = "ZO_ROOT_USER_EMAIL", value = var.openobserve_admin_email },
         { name = "ZO_S3_BUCKET_NAME", value = local.s3_buckets.k8s_logs },
@@ -330,13 +390,18 @@ resource "aws_ecs_service" "openobserve" {
     type = "distinctInstance"
   }
 
+  # Service Discovery configuration
+  service_registries {
+    registry_arn = aws_service_discovery_service.openobserve.arn
+  }
+
   load_balancer {
     target_group_arn = aws_lb_target_group.openobserve.arn
     container_name   = "openobserve"
     container_port   = 5080
   }
 
-  depends_on = [aws_lb_listener.openobserve]
+  depends_on = [aws_lb_listener.openobserve, aws_service_discovery_service.openobserve]
 
   tags = local.common_tags
 }

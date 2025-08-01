@@ -33,8 +33,7 @@ RUN chown -R appuser:appuser /app
 
 USER appuser
 
-# Set GOMAXPROCS to match ECS CPU allocation
-ENV GOMAXPROCS=2
+# GOMAXPROCS will be set via task definition environment variable
 
 # Health check with longer start period for initialization
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

@@ -85,10 +85,11 @@ func (c *RDSCacheClient) DescribeDBClusters(ctx context.Context) ([]rdsTypes.DBC
 		allClusters = append(allClusters, page.DBClusters...)
 	}
 	
-	// Cache for 5 minutes
+	// Cache for configured duration
+	cacheTTL := time.Duration(getEnvAsInt("CACHE_TTL_CLUSTERS", 300)) * time.Second
 	if len(allClusters) > 0 {
 		if data, err := json.Marshal(allClusters); err == nil {
-			if err := c.redisClient.Set(ctx, cacheKey, data, 5*time.Minute).Err(); err != nil {
+			if err := c.redisClient.Set(ctx, cacheKey, data, cacheTTL).Err(); err != nil {
 				slog.Error("Failed to cache RDS API response", "error", err, "key", cacheKey)
 			}
 		}
@@ -125,9 +126,10 @@ func (c *RDSCacheClient) DescribeDBInstances(ctx context.Context, instanceID str
 	
 	instance := &output.DBInstances[0]
 	
-	// Cache for 5 minutes
+	// Cache for configured duration
+	cacheTTL := time.Duration(getEnvAsInt("CACHE_TTL_INSTANCES", 300)) * time.Second
 	if data, err := json.Marshal(instance); err == nil {
-		if err := c.redisClient.Set(ctx, cacheKey, data, 5*time.Minute).Err(); err != nil {
+		if err := c.redisClient.Set(ctx, cacheKey, data, cacheTTL).Err(); err != nil {
 			slog.Error("Failed to cache RDS API response", "error", err, "key", cacheKey)
 		}
 	}
@@ -164,10 +166,11 @@ func (c *RDSCacheClient) DescribeDBLogFiles(ctx context.Context, instanceID stri
 		allLogFiles = append(allLogFiles, page.DescribeDBLogFiles...)
 	}
 	
-	// Cache for 1 minute (log files change frequently)
+	// Cache for configured duration (log files change frequently)
+	cacheTTL := time.Duration(getEnvAsInt("CACHE_TTL_LOGFILES", 60)) * time.Second
 	if len(allLogFiles) > 0 {
 		if data, err := json.Marshal(allLogFiles); err == nil {
-			if err := c.redisClient.Set(ctx, cacheKey, data, 1*time.Minute).Err(); err != nil {
+			if err := c.redisClient.Set(ctx, cacheKey, data, cacheTTL).Err(); err != nil {
 				slog.Error("Failed to cache RDS API response", "error", err, "key", cacheKey)
 			}
 		}
@@ -488,11 +491,8 @@ func (d *Discovery) processCluster(ctx context.Context, cluster rdsTypes.DBClust
 		return nil
 	}
 
-	// Save cluster details to DynamoDB
-	if err := d.saveClusterDetails(ctx, cluster); err != nil {
-		slog.Error("Failed to save cluster details", "error", err, "cluster_id", clusterID)
-		return err
-	}
+	// Skip saving cluster-only details as the instance table requires both cluster_id and instance_id
+	// Cluster information will be saved along with each instance
 
 	// Process each cluster member
 	for _, member := range cluster.DBClusterMembers {
@@ -609,7 +609,7 @@ func (d *Discovery) saveClusterDetails(ctx context.Context, cluster rdsTypes.DBC
 		"status":       &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Status)},
 		"endpoint":     &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Endpoint)},
 		"updated_at":   &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
-		"ttl":          &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(7*24*time.Hour).Unix(), 10)},
+		"ttl":          &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(time.Duration(getEnvAsInt("DYNAMODB_TTL_DAYS", 7))*24*time.Hour).Unix(), 10)},
 	}
 
 	_, err := d.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
@@ -633,7 +633,7 @@ func (d *Discovery) saveInstanceDetails(ctx context.Context, instanceID, cluster
 		"is_cluster_writer": &dynamoTypes.AttributeValueMemberBOOL{Value: aws.ToBool(member.IsClusterWriter)},
 		"status":            &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(instance.DBInstanceStatus)},
 		"updated_at":        &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
-		"ttl":               &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(7*24*time.Hour).Unix(), 10)},
+		"ttl":               &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Add(time.Duration(getEnvAsInt("DYNAMODB_TTL_DAYS", 7))*24*time.Hour).Unix(), 10)},
 	}
 
 	_, err = d.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
