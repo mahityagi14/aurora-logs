@@ -16,6 +16,8 @@ spec:
       serviceAccountName: discovery-sa
       nodeSelector:
         kubernetes.io/arch: arm64
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -37,7 +39,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: discovery
-        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:discovery-latest
+        image: [account-id].dkr.ecr.[region].amazonaws.com/aurora-log-system:discovery-latest
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -63,6 +65,12 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        - name: AWS_IMDS_ENDPOINT
+          value: "http://169.254.169.254"
         ports:
         - name: metrics
           containerPort: 9090

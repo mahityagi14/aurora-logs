@@ -299,7 +299,16 @@ func main() {
 		Region:           os.Getenv("AWS_REGION"),
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(cfg.Region))
+	// Configure AWS SDK with IMDSv2 support
+	// Set environment variables for IMDSv2
+	os.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE", "IPv4")
+	os.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", "http://169.254.169.254")
+	
+	awsCfg, err := config.LoadDefaultConfig(context.Background(), 
+		config.WithRegion(cfg.Region),
+		config.WithEC2IMDSRegion(),
+		config.WithEC2IMDSEndpointMode(aws.EC2IMDSEndpointModeStateIPv4),
+	)
 	if err != nil {
 		slog.Error("Failed to load AWS config", "error", err)
 		os.Exit(1)

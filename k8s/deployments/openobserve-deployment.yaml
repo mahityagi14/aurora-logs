@@ -16,6 +16,8 @@ spec:
       serviceAccountName: openobserve-sa
       nodeSelector:
         kubernetes.io/arch: arm64
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -36,6 +38,9 @@ spec:
         ports:
         - containerPort: 5080
           name: http
+        envFrom:
+        - configMapRef:
+            name: app-config
         env:
         - name: ZO_ROOT_USER_EMAIL
           valueFrom:
@@ -47,8 +52,12 @@ spec:
             secretKeyRef:
               name: openobserve-credentials
               key: admin-password
-        - name: AWS_REGION
-          value: "[region]"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        - name: AWS_IMDS_ENDPOINT
+          value: "http://169.254.169.254"
         - name: ZO_S3_BUCKET_NAME
           value: "company-aurora-logs-poc"
         - name: ZO_MEMORY_CACHE_MAX_SIZE
