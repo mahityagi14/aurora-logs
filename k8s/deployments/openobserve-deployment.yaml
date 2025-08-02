@@ -16,8 +16,8 @@ spec:
       serviceAccountName: openobserve-sa
       nodeSelector:
         kubernetes.io/arch: arm64
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      # hostNetwork: false for cluster DNS resolution
+      dnsPolicy: ClusterFirst
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: openobserve
-        image: [account-id].dkr.ecr.[region].amazonaws.com/aurora-log-system:openobserve-latest
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:openobserve-latest
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -52,16 +52,11 @@ spec:
             secretKeyRef:
               name: openobserve-credentials
               key: admin-password
-        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
-          value: "IPv4"
-        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
-          value: "http://169.254.169.254"
-        - name: AWS_IMDS_ENDPOINT
-          value: "http://169.254.169.254"
+        # Pod Identity handles AWS credentials automatically
         - name: ZO_S3_BUCKET_NAME
           value: "company-aurora-logs-poc"
         - name: ZO_MEMORY_CACHE_MAX_SIZE
-          value: "2048"
+          value: "256"
         - name: ZO_QUERY_THREAD_NUM
           value: "4"
         # Log retention configuration - 90 days
@@ -82,11 +77,11 @@ spec:
           value: "10"
         resources:
           requests:
-            cpu: "500m"
-            memory: "2Gi"
+            cpu: "200m"
+            memory: "512Mi"
           limits:
-            cpu: "2"
-            memory: "4Gi"
+            cpu: "500m"
+            memory: "1Gi"
         volumeMounts:
         - name: data
           mountPath: /data

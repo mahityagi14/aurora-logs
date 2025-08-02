@@ -27,7 +27,7 @@ data:
   OPENOBSERVE_STREAM: "aurora_logs"
   
   # Kafka Configuration
-  KAFKA_BROKERS: "kafka-service.aurora-logs.svc.cluster.local:9092"
+  KAFKA_BROKERS: "kafka-broker.aurora-logs.svc.cluster.local:9092"
   KAFKA_TOPIC: "aurora-logs"
   KAFKA_PARTITION_COUNT: "10"
   KAFKA_REPLICATION_FACTOR: "3"

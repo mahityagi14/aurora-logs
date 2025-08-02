@@ -16,8 +16,8 @@ spec:
       serviceAccountName: discovery-sa
       nodeSelector:
         kubernetes.io/arch: arm64
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      # hostNetwork: false for cluster DNS resolution
+      dnsPolicy: ClusterFirst
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -39,7 +39,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: discovery
-        image: [account-id].dkr.ecr.[region].amazonaws.com/aurora-log-system:discovery-latest
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:discovery-latest
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -65,23 +65,18 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
-          value: "IPv4"
-        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
-          value: "http://169.254.169.254"
-        - name: AWS_IMDS_ENDPOINT
-          value: "http://169.254.169.254"
+        # Pod Identity handles AWS credentials automatically
         ports:
         - name: metrics
           containerPort: 9090
           protocol: TCP
         resources:
           requests:
-            cpu: "500m"
-            memory: "1Gi"
+            cpu: "100m"
+            memory: "256Mi"
           limits:
-            cpu: "1"
-            memory: "2Gi"
+            cpu: "250m"
+            memory: "512Mi"
         livenessProbe:
           httpGet:
             path: /healthz

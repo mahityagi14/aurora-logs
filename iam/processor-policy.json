@@ -1,0 +1,39 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "rds:DescribeDBLogFiles",
+                "rds:DownloadDBLogFilePortion"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:PutObjectAcl",
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::company-aurora-logs-poc",
+                "arn:aws:s3:::company-aurora-logs-poc/*"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:UpdateItem",
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:PutItem"
+            ],
+            "Resource": [
+                "arn:aws:dynamodb:us-east-1:072006186126:table/aurora-log-file-tracking",
+                "arn:aws:dynamodb:us-east-1:072006186126:table/aurora-log-processing-jobs"
+            ]
+        }
+    ]
+}

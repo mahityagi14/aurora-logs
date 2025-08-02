@@ -1,0 +1,30 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "rds:DescribeDBClusters",
+                "rds:DescribeDBInstances",
+                "rds:DescribeDBLogFiles",
+                "rds:ListTagsForResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:Query",
+                "dynamodb:Scan",
+                "dynamodb:BatchWriteItem"
+            ],
+            "Resource": [
+                "arn:aws:dynamodb:us-east-1:072006186126:table/aurora-log-file-tracking",
+                "arn:aws:dynamodb:us-east-1:072006186126:table/aurora-instance-metadata"
+            ]
+        }
+    ]
+}

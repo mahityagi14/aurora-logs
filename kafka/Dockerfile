@@ -1,36 +1,34 @@
-# Use ARM64 platform explicitly - Kafka 4.0
-# NOTE: Kafka 4.0 requires Java 17 which is included in the bitnami/kafka:4.0 image
-FROM --platform=linux/arm64 bitnami/kafka:4.0
+# Use Confluent Kafka open-source image (CP-Kafka) - ARM64 specific version 8.0.0
+# This includes Apache Kafka and open-source components only
+FROM confluentinc/cp-kafka:8.0.0.arm64
 
 USER root
 
 # Install tini for proper signal handling
-RUN install_packages tini
+RUN yum install -y https://github.com/krallin/tini/releases/download/v0.19.0/tini_0.19.0-aarch64.rpm && \
+    yum clean all
+
+# Create necessary directories
+RUN mkdir -p /var/lib/kafka/data /var/lib/kafka/logs /etc/kafka && \
+    chown -R appuser:appuser /var/lib/kafka /etc/kafka
 
 # Copy custom start script with execute permissions
-COPY --chmod=755 start-kafka.sh /opt/bitnami/scripts/kafka/start-kafka.sh
+COPY --chmod=755 start-kafka.sh /usr/local/bin/start-kafka.sh
 
-# Fix permissions for all Bitnami directories that Kafka needs to write to
-# The issue is that /opt/bitnami/kafka/config is a symlink to /bitnami/kafka/config
-RUN mkdir -p /bitnami/kafka/data /bitnami/kafka/metadata /bitnami/kafka/config /bitnami/kafka/logs && \
-    chown -R 1001:1001 /bitnami && \
-    chown -R 1001:1001 /opt/bitnami && \
-    chmod -R 775 /bitnami/kafka && \
-    chmod -R 775 /opt/bitnami/kafka
-
-# Ensure the startup scripts directory is writable
-RUN chmod -R 755 /opt/bitnami/scripts/kafka/
-
-USER 1001
+USER appuser
 
 # Set JVM options for container environment
 ENV KAFKA_HEAP_OPTS="-Xmx2G -Xms2G"
-ENV JMX_PORT=""
+ENV KAFKA_JVM_PERFORMANCE_OPTS="-XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent"
+ENV KAFKA_LOG4J_OPTS="-Dlog4j.configuration=file:/etc/kafka/log4j.properties"
 
-# Health check for Kafka 4.0 with KRaft mode
-# Using kafka-broker-api-versions.sh as it's more reliable for health checks
+# Expose ports
+EXPOSE 9092 9093
+
+# Health check using kafka-broker-api-versions
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
-  CMD kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1
+  CMD kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1
 
 # Use tini as init system for proper signal handling
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/bitnami/scripts/kafka/start-kafka.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/start-kafka.sh"]

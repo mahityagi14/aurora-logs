@@ -1,73 +1,74 @@
 #!/bin/bash
 set -e
 
-# Handle SIGTERM for graceful shutdown
-trap 'echo "Received SIGTERM, initiating graceful shutdown..."; kill -TERM $PID; wait $PID' TERM INT
+echo "Starting Confluent Kafka in KRaft mode..."
 
-# Default values for KRaft mode (Kafka 4.0)
-# Extract numeric ID from pod name if KAFKA_NODE_ID is set to a pod name
-if [[ "${KAFKA_CFG_NODE_ID}" =~ ^kafka-([0-9]+)$ ]]; then
-    export KAFKA_CFG_NODE_ID="${BASH_REMATCH[1]}"
-fi
-# Add 1 to make it 1-based instead of 0-based
-if [[ "${KAFKA_CFG_NODE_ID}" =~ ^[0-9]+$ ]]; then
-    export KAFKA_CFG_NODE_ID=$((KAFKA_CFG_NODE_ID + 1))
-fi
-export KAFKA_CFG_NODE_ID="${KAFKA_CFG_NODE_ID:-1}"
-export KAFKA_CFG_PROCESS_ROLES="${KAFKA_CFG_PROCESS_ROLES:-broker,controller}"
-export KAFKA_CFG_CONTROLLER_QUORUM_VOTERS="${KAFKA_CFG_CONTROLLER_QUORUM_VOTERS:-1@kafka-service:9093}"
-export KAFKA_CFG_LISTENERS="${KAFKA_CFG_LISTENERS:-PLAINTEXT://:9092,CONTROLLER://:9093}"
-export KAFKA_CFG_ADVERTISED_LISTENERS="${KAFKA_CFG_ADVERTISED_LISTENERS:-PLAINTEXT://kafka-service.aurora-logs.svc.cluster.local:9092}"
-export KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP="${KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP:-CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT}"
-export KAFKA_CFG_CONTROLLER_LISTENER_NAMES="${KAFKA_CFG_CONTROLLER_LISTENER_NAMES:-CONTROLLER}"
-export KAFKA_CFG_INTER_BROKER_LISTENER_NAME="${KAFKA_CFG_INTER_BROKER_LISTENER_NAME:-PLAINTEXT}"
+# Set default values
+export KAFKA_NODE_ID=${KAFKA_NODE_ID:-1}
+export KAFKA_LISTENERS=${KAFKA_LISTENERS:-"PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"}
+export KAFKA_ADVERTISED_LISTENERS=${KAFKA_ADVERTISED_LISTENERS:-"PLAINTEXT://localhost:9092"}
+export KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:-"CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"}
+export KAFKA_CONTROLLER_LISTENER_NAMES=${KAFKA_CONTROLLER_LISTENER_NAMES:-"CONTROLLER"}
+export KAFKA_CONTROLLER_QUORUM_VOTERS=${KAFKA_CONTROLLER_QUORUM_VOTERS:-"1@localhost:9093"}
+export KAFKA_PROCESS_ROLES=${KAFKA_PROCESS_ROLES:-"broker,controller"}
+export KAFKA_LOG_DIRS=${KAFKA_LOG_DIRS:-"/var/lib/kafka/data"}
+export KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-1}
+export KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR:-1}
+export KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR:-1}
+export KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=${KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS:-0}
+export KAFKA_AUTO_CREATE_TOPICS_ENABLE=${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
 
-# KRaft settings for Kafka 4.0
-export KAFKA_ENABLE_KRAFT="${KAFKA_ENABLE_KRAFT:-yes}"
-export KAFKA_KRAFT_CLUSTER_ID="${KAFKA_KRAFT_CLUSTER_ID:-aurora-logs-kafka-cluster}"
-
-# Kafka 4.0 directory configurations
-export KAFKA_CFG_LOG_DIRS="${KAFKA_CFG_LOG_DIRS:-/bitnami/kafka/data}"
-export KAFKA_CFG_METADATA_LOG_DIR="${KAFKA_CFG_METADATA_LOG_DIR:-/bitnami/kafka/metadata}"
-
-# Updated settings for Kafka 4.0 with new consumer rebalance protocol
-export KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE="${KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE:-false}"
-export KAFKA_CFG_DEFAULT_REPLICATION_FACTOR="${KAFKA_CFG_DEFAULT_REPLICATION_FACTOR:-1}"
-export KAFKA_CFG_MIN_INSYNC_REPLICAS="${KAFKA_CFG_MIN_INSYNC_REPLICAS:-1}"
-export KAFKA_CFG_NUM_PARTITIONS="${KAFKA_CFG_NUM_PARTITIONS:-10}"
-export KAFKA_CFG_LOG_RETENTION_HOURS="${KAFKA_CFG_LOG_RETENTION_HOURS:-168}"
-export KAFKA_CFG_LOG_RETENTION_BYTES="${KAFKA_CFG_LOG_RETENTION_BYTES:-107374182400}"
-export KAFKA_CFG_COMPRESSION_TYPE="${KAFKA_CFG_COMPRESSION_TYPE:-snappy}"
-export KAFKA_CFG_LOG_SEGMENT_BYTES="${KAFKA_CFG_LOG_SEGMENT_BYTES:-1073741824}"
-
-# Performance tuning
-export KAFKA_CFG_NUM_NETWORK_THREADS="${KAFKA_CFG_NUM_NETWORK_THREADS:-8}"
-export KAFKA_CFG_NUM_IO_THREADS="${KAFKA_CFG_NUM_IO_THREADS:-8}"
-export KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES="${KAFKA_CFG_SOCKET_SEND_BUFFER_BYTES:-102400}"
-export KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES="${KAFKA_CFG_SOCKET_RECEIVE_BUFFER_BYTES:-102400}"
-export KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES="${KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES:-104857600}"
-
-# Kafka 4.0 requires initial cluster ID
-export KAFKA_CFG_INITIAL_BROKER_REGISTRATION_TIMEOUT_MS="${KAFKA_CFG_INITIAL_BROKER_REGISTRATION_TIMEOUT_MS:-60000}"
-
-# Java 17 is used by default in Kafka 4.0
-if [ "${BITNAMI_DEBUG}" = "true" ]; then
-    export KAFKA_CFG_LOG4J_ROOT_LOGLEVEL="DEBUG"
-    echo "Java version:"
-    java -version
+# Generate cluster ID if not provided
+if [ -z "$CLUSTER_ID" ]; then
+    export CLUSTER_ID=$(kafka-storage random-uuid)
+    echo "Generated Cluster ID: $CLUSTER_ID"
 fi
 
-echo "Starting Kafka 4.0 in KRaft mode (Java 17)..."
-echo "Configuration summary:"
-echo "Node ID: $KAFKA_CFG_NODE_ID"
-echo "Roles: $KAFKA_CFG_PROCESS_ROLES"
-echo "Listeners: $KAFKA_CFG_LISTENERS"
+# Format storage if not already formatted
+if [ ! -f "$KAFKA_LOG_DIRS/meta.properties" ]; then
+    echo "Formatting Kafka storage..."
+    kafka-storage format -t $CLUSTER_ID -c /etc/kafka/kraft/server.properties
+fi
 
-# Debug: Show directory permissions
-echo "Directory permissions check:"
-ls -la /bitnami/kafka/ || true
-ls -la /opt/bitnami/kafka/ || true
-ls -la /opt/bitnami/kafka/config/ || true
+# Create server.properties for KRaft mode
+cat > /etc/kafka/kraft/server.properties <<EOF
+# Server Basics
+node.id=$KAFKA_NODE_ID
+process.roles=$KAFKA_PROCESS_ROLES
 
-# Run Bitnami entrypoint
-exec /opt/bitnami/scripts/kafka/entrypoint.sh /opt/bitnami/scripts/kafka/run.sh
+# Listeners
+listeners=$KAFKA_LISTENERS
+advertised.listeners=$KAFKA_ADVERTISED_LISTENERS
+listener.security.protocol.map=$KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+controller.listener.names=$KAFKA_CONTROLLER_LISTENER_NAMES
+inter.broker.listener.name=PLAINTEXT
+
+# Controller
+controller.quorum.voters=$KAFKA_CONTROLLER_QUORUM_VOTERS
+
+# Log Basics
+log.dirs=$KAFKA_LOG_DIRS
+num.partitions=10
+default.replication.factor=$KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+
+# Log Retention
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+
+# Internal Topic Settings
+offsets.topic.replication.factor=$KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+transaction.state.log.replication.factor=$KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+transaction.state.log.min.isr=$KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+
+# Group Coordinator
+group.initial.rebalance.delay.ms=$KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+
+# Other Settings
+auto.create.topics.enable=$KAFKA_AUTO_CREATE_TOPICS_ENABLE
+compression.type=producer
+delete.topic.enable=true
+EOF
+
+echo "Starting Kafka server..."
+exec kafka-server-start /etc/kafka/kraft/server.properties
