@@ -10,9 +10,16 @@ RUN install_packages tini
 # Copy custom start script with execute permissions
 COPY --chmod=755 start-kafka.sh /opt/bitnami/scripts/kafka/start-kafka.sh
 
-# Create data and metadata directories with permissions
-RUN mkdir -p /bitnami/kafka/data /bitnami/kafka/metadata && \
-    chown -R 1001:1001 /bitnami/kafka
+# Fix permissions for all Bitnami directories that Kafka needs to write to
+# The issue is that /opt/bitnami/kafka/config is a symlink to /bitnami/kafka/config
+RUN mkdir -p /bitnami/kafka/data /bitnami/kafka/metadata /bitnami/kafka/config /bitnami/kafka/logs && \
+    chown -R 1001:1001 /bitnami && \
+    chown -R 1001:1001 /opt/bitnami && \
+    chmod -R 775 /bitnami/kafka && \
+    chmod -R 775 /opt/bitnami/kafka
+
+# Ensure the startup scripts directory is writable
+RUN chmod -R 755 /opt/bitnami/scripts/kafka/
 
 USER 1001
 

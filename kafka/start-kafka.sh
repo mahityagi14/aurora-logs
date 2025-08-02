@@ -5,6 +5,14 @@ set -e
 trap 'echo "Received SIGTERM, initiating graceful shutdown..."; kill -TERM $PID; wait $PID' TERM INT
 
 # Default values for KRaft mode (Kafka 4.0)
+# Extract numeric ID from pod name if KAFKA_NODE_ID is set to a pod name
+if [[ "${KAFKA_CFG_NODE_ID}" =~ ^kafka-([0-9]+)$ ]]; then
+    export KAFKA_CFG_NODE_ID="${BASH_REMATCH[1]}"
+fi
+# Add 1 to make it 1-based instead of 0-based
+if [[ "${KAFKA_CFG_NODE_ID}" =~ ^[0-9]+$ ]]; then
+    export KAFKA_CFG_NODE_ID=$((KAFKA_CFG_NODE_ID + 1))
+fi
 export KAFKA_CFG_NODE_ID="${KAFKA_CFG_NODE_ID:-1}"
 export KAFKA_CFG_PROCESS_ROLES="${KAFKA_CFG_PROCESS_ROLES:-broker,controller}"
 export KAFKA_CFG_CONTROLLER_QUORUM_VOTERS="${KAFKA_CFG_CONTROLLER_QUORUM_VOTERS:-1@kafka-service:9093}"
@@ -54,6 +62,12 @@ echo "Configuration summary:"
 echo "Node ID: $KAFKA_CFG_NODE_ID"
 echo "Roles: $KAFKA_CFG_PROCESS_ROLES"
 echo "Listeners: $KAFKA_CFG_LISTENERS"
+
+# Debug: Show directory permissions
+echo "Directory permissions check:"
+ls -la /bitnami/kafka/ || true
+ls -la /opt/bitnami/kafka/ || true
+ls -la /opt/bitnami/kafka/config/ || true
 
 # Run Bitnami entrypoint
 exec /opt/bitnami/scripts/kafka/entrypoint.sh /opt/bitnami/scripts/kafka/run.sh

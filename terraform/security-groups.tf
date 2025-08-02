@@ -1,48 +1,8 @@
 # Security groups as per ecs-phases documentation
 
-# Kafka Brokers Security Group
-resource "aws_security_group" "kafka_brokers" {
-  name        = "kafka-brokers-sg"
-  description = "Security group for Kafka brokers on ECS"
-  vpc_id      = data.aws_vpc.existing.id
-
-  ingress {
-    from_port   = 9092
-    to_port     = 9092
-    protocol    = "tcp"
-    security_groups = [aws_security_group.ecs_instances.id]
-    description = "Kafka client connections"
-  }
-
-  ingress {
-    from_port   = 9093
-    to_port     = 9093
-    protocol    = "tcp"
-    self        = true
-    description = "KRaft controller port"
-  }
-
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    self        = true
-    description = "Inter-broker communication"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "kafka-brokers-sg"
-    }
-  )
+# Import existing Kafka Brokers Security Group
+data "aws_security_group" "kafka_brokers" {
+  id = data.aws_security_group.kafka.id  # Using the already imported kafka security group
 }
 
 # Valkey Cluster Security Group
@@ -74,76 +34,12 @@ resource "aws_security_group" "valkey_cluster" {
   )
 }
 
-# Aurora MySQL Security Group
-resource "aws_security_group" "aurora_mysql" {
-  name        = "aurora-mysql-sg"
-  description = "Security group for Aurora MySQL cluster"
-  vpc_id      = data.aws_vpc.existing.id
-
-  ingress {
-    from_port   = 3306
-    to_port     = 3306
-    protocol    = "tcp"
-    security_groups = [aws_security_group.ecs_instances.id]
-    description = "Access from ECS"
-  }
-
-  ingress {
-    from_port   = 3306
-    to_port     = 3306
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Direct access for testing"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "aurora-mysql-sg"
-    }
-  )
+# Import existing Aurora MySQL Security Group
+data "aws_security_group" "aurora_mysql" {
+  id = data.aws_security_group.rds.id  # Using the already imported RDS security group
 }
 
-# OpenObserve Security Group
-resource "aws_security_group" "openobserve" {
-  name        = "openobserve-sg"
-  description = "Security group for OpenObserve on ECS"
-  vpc_id      = data.aws_vpc.existing.id
-
-  ingress {
-    from_port   = 5080
-    to_port     = 5080
-    protocol    = "tcp"
-    security_groups = [aws_security_group.alb.id]
-    description = "HTTP from ALB"
-  }
-
-  ingress {
-    from_port   = 5080
-    to_port     = 5080
-    protocol    = "tcp"
-    security_groups = [aws_security_group.ecs_instances.id]
-    description = "Health checks"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "openobserve-sg"
-    }
-  )
+# Import existing OpenObserve Security Group
+data "aws_security_group" "openobserve_sg" {
+  id = data.aws_security_group.openobserve.id  # Using the already imported openobserve security group
 }

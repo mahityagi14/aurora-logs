@@ -77,6 +77,12 @@ variable "openobserve_admin_email" {
   default     = "admin@example.com"
 }
 
+variable "enable_service_connect" {
+  description = "Enable ECS Service Connect for service mesh"
+  type        = bool
+  default     = true
+}
+
 variable "enable_container_insights" {
   description = "Enable CloudWatch Container Insights for ECS cluster"
   type        = bool

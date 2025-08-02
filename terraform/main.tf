@@ -25,34 +25,35 @@ locals {
     k8s_logs    = "aurora-k8s-logs-072006186126"  # Reuse for ECS logs
   }
   
-  # Container configurations - Using full t4g.medium capacity (2 vCPUs, 4GB RAM)
+  # Container configurations - Adjusted for t4g.medium ECS capacity
+  # t4g.medium has 2 vCPUs (2048 CPU units) and ~3.8GB usable memory
   container_configs = {
     discovery = {
       name   = "discovery"
       image  = "${data.aws_ecr_repository.existing_aurora_log_system.repository_url}:discovery-latest"
-      cpu    = 1792  # 1.75 vCPUs
-      memory = 3584  # 3.5 GB (leaving some memory for ECS agent)
+      cpu    = 2048  # 2 vCPUs (full capacity)
+      memory = 3584  # 3.5 GB RAM (leaving overhead for ECS agent)
       count  = var.environment == "production" ? 2 : 1
     }
     processor = {
       name   = "processor"
       image  = "${data.aws_ecr_repository.existing_aurora_log_system.repository_url}:processor-latest"
-      cpu    = 1792  # 1.75 vCPUs
-      memory = 3584  # 3.5 GB (leaving some memory for ECS agent)
+      cpu    = 2048  # 2 vCPUs (full capacity)
+      memory = 3584  # 3.5 GB RAM (leaving overhead for ECS agent)
       count  = var.environment == "production" ? 2 : 1
     }
     kafka = {
       name   = "kafka"
       image  = "${data.aws_ecr_repository.existing_aurora_log_system.repository_url}:kafka-latest"
-      cpu    = 1792  # 1.75 vCPUs
-      memory = 3584  # 3.5 GB (leaving some memory for ECS agent)
+      cpu    = 2048  # 2 vCPUs (full capacity)
+      memory = 3584  # 3.5 GB RAM (leaving overhead for ECS agent)
       count  = 1
     }
     openobserve = {
       name   = "openobserve"
       image  = "${data.aws_ecr_repository.existing_aurora_log_system.repository_url}:openobserve-latest"
-      cpu    = 1792  # 1.75 vCPUs
-      memory = 3584  # 3.5 GB (leaving some memory for ECS agent)
+      cpu    = 2048  # 2 vCPUs (full capacity)
+      memory = 3584  # 3.5 GB RAM (leaving overhead for ECS agent)
       count  = 1
     }
   }

@@ -18,7 +18,7 @@ resource "aws_service_discovery_service" "discovery" {
 
     dns_records {
       ttl  = 10
-      type = "A"
+      type = "SRV"
     }
 
     routing_policy = "MULTIVALUE"
@@ -40,7 +40,7 @@ resource "aws_service_discovery_service" "processor" {
 
     dns_records {
       ttl  = 10
-      type = "A"
+      type = "SRV"
     }
 
     routing_policy = "MULTIVALUE"
@@ -62,7 +62,7 @@ resource "aws_service_discovery_service" "kafka" {
 
     dns_records {
       ttl  = 10
-      type = "A"
+      type = "SRV"
     }
 
     routing_policy = "WEIGHTED"
@@ -84,7 +84,7 @@ resource "aws_service_discovery_service" "openobserve" {
 
     dns_records {
       ttl  = 10
-      type = "A"
+      type = "SRV"
     }
 
     routing_policy = "WEIGHTED"

@@ -91,8 +91,30 @@ Note: ElastiCache Valkey Cluster now has prevent_destroy lifecycle rule and will
 **Resolution**: User manually fixed the trust relationship JSON format
 **Status**: Trust relationships now working correctly
 
+### ECS Resource Configuration (DO NOT CHANGE)
+
+**EC2 Instance Type**: t4g.medium (ARM64)
+- **vCPUs**: 2 (2048 CPU units in ECS)
+- **Memory**: 4 GB (4096 MB)
+- **Available for containers**: ~3835 MB (after ECS agent overhead)
+
+**Service Resource Allocation** (Each service runs on its own dedicated t4g.medium instance):
+
+| Service      | CPU Units | Memory (MB) | Notes                                           |
+|--------------|-----------|-------------|-------------------------------------------------|
+| Discovery    | 2048      | 3584        | Full capacity of t4g.medium                     |
+| Processor    | 2048      | 3584        | Full capacity of t4g.medium                     |
+| Kafka        | 2048      | 3584        | Full capacity of t4g.medium                     |
+| OpenObserve  | 2048      | 3584        | Full capacity of t4g.medium                     |
+
+**Important**:
+- Each service gets its own dedicated t4g.medium instance (4 instances total)
+- Memory is set to 3584 MB to leave overhead for ECS agent (~251 MB)
+- CPU is set to full 2048 units (2 vCPUs)
+- **DO NOT MODIFY THESE VALUES** - They are optimized for t4g.medium instances
+
 ### Last Updated
 
-- Date: 2025-07-29
-- Reason: User identified IAM trust relationship issues preventing ECS/EKS instance registration
+- Date: 2025-08-01
+- Reason: Added ECS resource configuration for t4g.medium instances
 - Status: All restricted components are stable and functional

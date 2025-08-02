@@ -62,7 +62,7 @@ resource "aws_lb_target_group" "openobserve" {
   port        = 5080
   protocol    = "HTTP"
   vpc_id      = data.aws_vpc.existing.id
-  target_type = "instance"  # Changed to instance for EC2 launch type
+  target_type = "ip"  # Changed to ip for awsvpc network mode
 
   health_check {
     enabled             = true

@@ -6,7 +6,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: gp3  # Or your preferred storage class
+  storageClassName: gp2  # Using existing gp2 storage class
   resources:
     requests:
       storage: 100Gi

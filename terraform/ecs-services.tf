@@ -3,7 +3,7 @@
 # Discovery Service
 resource "aws_ecs_task_definition" "discovery" {
   family                   = "${var.name_prefix}-discovery"
-  network_mode             = "bridge"
+  network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn           = aws_iam_role.ecs_task_role.arn
@@ -23,7 +23,7 @@ resource "aws_ecs_task_definition" "discovery" {
         { name = "TRACKING_TABLE", value = local.dynamodb_tables.tracking },
         { name = "JOBS_TABLE", value = local.dynamodb_tables.jobs },
         { name = "S3_BUCKET", value = local.s3_buckets.aurora_logs },
-        { name = "KAFKA_BROKERS", value = "kafka.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:9092" },
+        { name = "KAFKA_BROKERS", value = "kafka.aurora-logs.local:9092" },  # Using service discovery DNS
         { name = "VALKEY_PORT", value = "6379" },
         { name = "VALKEY_URL", value = "redis://${data.aws_elasticache_replication_group.existing_valkey.primary_endpoint_address}:6379" },
         { name = "LOG_LEVEL", value = "INFO" },
@@ -87,12 +87,16 @@ resource "aws_ecs_service" "discovery" {
     expression = "task:group == service:discovery"
   }
 
-  # Service Discovery configuration
-  service_registries {
-    registry_arn = aws_service_discovery_service.discovery.arn
+  # Service Discovery not needed for Discovery service - it doesn't accept incoming connections
+  
+  # Network configuration for awsvpc mode
+  network_configuration {
+    subnets         = [data.aws_subnet.private_1.id, data.aws_subnet.private_2.id]
+    security_groups = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
   }
-
-  depends_on = [aws_service_discovery_service.discovery]
+  
+  depends_on = []
 
   tags = local.common_tags
 }
@@ -100,7 +104,7 @@ resource "aws_ecs_service" "discovery" {
 # Processor Service
 resource "aws_ecs_task_definition" "processor" {
   family                   = "${var.name_prefix}-processor"
-  network_mode             = "bridge"
+  network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn           = aws_iam_role.ecs_task_role.arn
@@ -120,8 +124,8 @@ resource "aws_ecs_task_definition" "processor" {
         { name = "TRACKING_TABLE", value = local.dynamodb_tables.tracking },
         { name = "JOBS_TABLE", value = local.dynamodb_tables.jobs },
         { name = "S3_BUCKET", value = local.s3_buckets.aurora_logs },
-        { name = "KAFKA_BROKERS", value = "kafka.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:9092" },
-        { name = "OPENOBSERVE_URL", value = "http://openobserve.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:5080" },
+        { name = "KAFKA_BROKERS", value = "kafka.aurora-logs.local:9092" },  # Using service discovery DNS
+        { name = "OPENOBSERVE_URL", value = "http://openobserve.aurora-logs.local:5080" },  # Using service discovery DNS
         { name = "LOG_LEVEL", value = "INFO" },
         { name = "CONSUMER_GROUP", value = "aurora-processor-group" },
         { name = "SHARD_ID", value = "0" },
@@ -185,12 +189,16 @@ resource "aws_ecs_service" "processor" {
     type = "distinctInstance"
   }
 
-  # Service Discovery configuration
-  service_registries {
-    registry_arn = aws_service_discovery_service.processor.arn
+  # Service Discovery not needed for Processor service - it doesn't accept incoming connections
+  
+  # Network configuration for awsvpc mode
+  network_configuration {
+    subnets         = [data.aws_subnet.private_1.id, data.aws_subnet.private_2.id]
+    security_groups = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
   }
-
-  depends_on = [aws_service_discovery_service.processor]
+  
+  depends_on = []
 
   tags = local.common_tags
 }
@@ -198,7 +206,7 @@ resource "aws_ecs_service" "processor" {
 # Kafka Service
 resource "aws_ecs_task_definition" "kafka" {
   family                   = "${var.name_prefix}-kafka"
-  network_mode             = "host"  # Use host network for Kafka
+  network_mode             = "awsvpc"  # Use awsvpc for Service Discovery DNS
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn           = aws_iam_role.ecs_task_role.arn
@@ -220,11 +228,11 @@ resource "aws_ecs_task_definition" "kafka" {
       environment = [
         { name = "KAFKA_CFG_NODE_ID", value = "1" },
         { name = "KAFKA_CFG_PROCESS_ROLES", value = "broker,controller" },
-        { name = "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS", value = "1@kafka-service:9093" },
+        { name = "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS", value = "1@localhost:9093" },
         { name = "KAFKA_BROKER_PORT", value = "9092" },
         { name = "KAFKA_CONTROLLER_PORT", value = "9093" },
         { name = "KAFKA_CFG_LISTENERS", value = "PLAINTEXT://:9092,CONTROLLER://:9093" },
-        { name = "KAFKA_CFG_ADVERTISED_LISTENERS", value = "PLAINTEXT://kafka.${aws_service_discovery_private_dns_namespace.aurora_logs.name}:9092" },
+        { name = "KAFKA_CFG_ADVERTISED_LISTENERS", value = "PLAINTEXT://kafka.aurora-logs.local:9092" },  # Using service discovery DNS
         { name = "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP", value = "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" },
         { name = "KAFKA_CFG_CONTROLLER_LISTENER_NAMES", value = "CONTROLLER" },
         { name = "KAFKA_CFG_INTER_BROKER_LISTENER_NAME", value = "PLAINTEXT" },
@@ -239,12 +247,10 @@ resource "aws_ecs_task_definition" "kafka" {
       portMappings = [
         {
           containerPort = 9092
-          hostPort      = 9092
           protocol      = "tcp"
         },
         {
           containerPort = 9093
-          hostPort      = 9093
           protocol      = "tcp"
         }
       ]
@@ -289,7 +295,16 @@ resource "aws_ecs_service" "kafka" {
 
   # Service Discovery configuration
   service_registries {
-    registry_arn = aws_service_discovery_service.kafka.arn
+    registry_arn   = aws_service_discovery_service.kafka.arn
+    container_name = "kafka"
+    container_port = 9092
+  }
+  
+  # Network configuration for awsvpc mode
+  network_configuration {
+    subnets         = [data.aws_subnet.private_1.id, data.aws_subnet.private_2.id]
+    security_groups = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
   }
 
   depends_on = [aws_service_discovery_service.kafka]
@@ -300,7 +315,7 @@ resource "aws_ecs_service" "kafka" {
 # OpenObserve Service
 resource "aws_ecs_task_definition" "openobserve" {
   family                   = "${var.name_prefix}-openobserve"
-  network_mode             = "bridge"
+  network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn           = aws_iam_role.ecs_task_role.arn
@@ -342,12 +357,10 @@ resource "aws_ecs_task_definition" "openobserve" {
       portMappings = [
         {
           containerPort = 5080
-          hostPort      = 5080
           protocol      = "tcp"
         },
         {
           containerPort = 5081
-          hostPort      = 5081
           protocol      = "tcp"
         }
       ]
@@ -392,13 +405,22 @@ resource "aws_ecs_service" "openobserve" {
 
   # Service Discovery configuration
   service_registries {
-    registry_arn = aws_service_discovery_service.openobserve.arn
+    registry_arn   = aws_service_discovery_service.openobserve.arn
+    container_name = "openobserve"
+    container_port = 5080
   }
 
   load_balancer {
     target_group_arn = aws_lb_target_group.openobserve.arn
     container_name   = "openobserve"
     container_port   = 5080
+  }
+  
+  # Network configuration for awsvpc mode
+  network_configuration {
+    subnets         = [data.aws_subnet.private_1.id, data.aws_subnet.private_2.id]
+    security_groups = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
   }
 
   depends_on = [aws_lb_listener.openobserve, aws_service_discovery_service.openobserve]
