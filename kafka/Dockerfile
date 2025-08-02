@@ -1,11 +1,14 @@
 # Use Confluent Kafka open-source image (CP-Kafka) - ARM64 specific version 8.0.0
 # This includes Apache Kafka and open-source components only
+# Note: Jenkins may show platform warnings when building on AMD64, this is expected
 FROM confluentinc/cp-kafka:8.0.0.arm64
 
 USER root
 
 # Install tini for proper signal handling
-RUN yum install -y https://github.com/krallin/tini/releases/download/v0.19.0/tini_0.19.0-aarch64.rpm && \
+# Download tini binary directly for ARM64 since RPM is not available
+RUN curl -L https://github.com/krallin/tini/releases/download/v0.19.0/tini-arm64 -o /usr/bin/tini && \
+    chmod +x /usr/bin/tini && \
     yum clean all
 
 # Create necessary directories
