@@ -1,0 +1,33 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aurora-logs
+---
+# Service Account for Discovery
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: discovery-sa
+  namespace: aurora-logs
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-discovery-role
+---
+# Service Account for Processor
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: processor-sa
+  namespace: aurora-logs
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-processor-role
+---
+# Service Account for OpenObserve
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openobserve-sa
+  namespace: aurora-logs
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-openobserve-role

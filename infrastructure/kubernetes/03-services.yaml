@@ -1,0 +1,69 @@
+---
+# Kafka Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-service
+  namespace: aurora-logs
+spec:
+  type: ClusterIP
+  ports:
+  - name: internal
+    port: 9093
+    targetPort: 9093
+  - name: controller
+    port: 19093
+    targetPort: 19093
+  selector:
+    app: kafka
+---
+# Kafka Broker Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-broker
+  namespace: aurora-logs
+spec:
+  type: ClusterIP
+  ports:
+  - name: broker
+    port: 9092
+    targetPort: 9092
+  selector:
+    app: kafka
+---
+# OpenObserve Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: openobserve-service
+  namespace: aurora-logs
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5080
+    targetPort: 5080
+    name: http
+  selector:
+    app: openobserve
+---
+# OpenObserve LoadBalancer (for ALB)
+apiVersion: v1
+kind: Service
+metadata:
+  name: openobserve-lb
+  namespace: aurora-logs
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-target-type: "ip"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 5080
+    protocol: TCP
+    name: http
+  selector:
+    app: openobserve

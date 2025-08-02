@@ -1,11 +1,10 @@
 #!/bin/bash
 set -e
 
-# Comprehensive test script for Aurora Log System
-# Tests all functionality before production deployment
+# Aurora Log System Test Suite
 
 echo "====================================="
-echo "Aurora Log System - Comprehensive Test Suite"
+echo "Aurora Log System - Test Suite"
 echo "====================================="
 echo ""
 
@@ -13,7 +12,7 @@ echo ""
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Test configuration
 NAMESPACE=${NAMESPACE:-aurora-logs}
@@ -134,9 +133,6 @@ if [ -n "$PROCESSOR_POD" ]; then
     kubectl exec -n $NAMESPACE $PROCESSOR_POD -- wget -q -O- http://localhost:8080/health &>/dev/null
     print_result $? "Processor health endpoint responding"
     
-    echo -n "Testing processor integrity endpoint... "
-    kubectl exec -n $NAMESPACE $PROCESSOR_POD -- wget -q -O- http://localhost:8080/integrity/report &>/dev/null
-    print_result $? "Processor integrity endpoint responding"
 fi
 
 echo ""
@@ -286,12 +282,10 @@ echo "10. Integration Test Summary"
 echo "----------------------------"
 
 # Run Go integration tests if available
-if [ -f "../tests/integration_test.go" ]; then
+if [ -f "integration_test.go" ]; then
     echo "Running Go integration tests..."
-    cd ../tests
     go test -v -tags=integration -timeout 10m ./...
     print_result $? "Go integration tests"
-    cd -
 else
     echo -e "${YELLOW}Go integration tests not found${NC}"
 fi

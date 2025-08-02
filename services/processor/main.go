@@ -1,0 +1,869 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamoTypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/segmentio/kafka-go"
+)
+
+// Configuration helpers
+func getEnvOrDefault(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
+func getEnvAsInt(key string, defaultVal int) int {
+	if val := os.Getenv(key); val != "" {
+		if intVal, err := strconv.Atoi(val); err == nil {
+			return intVal
+		}
+	}
+	return defaultVal
+}
+
+
+// Circuit Breaker implementation
+type CircuitBreaker struct {
+	maxFailures     int
+	resetTimeout    time.Duration
+	failures        atomic.Int32
+	lastFailureTime atomic.Int64
+	state           atomic.Int32 // 0=closed, 1=open, 2=half-open
+}
+
+func NewCircuitBreaker(maxFailures int, resetTimeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		maxFailures:  maxFailures,
+		resetTimeout: resetTimeout,
+	}
+}
+
+func (cb *CircuitBreaker) Call(fn func() error) error {
+	if !cb.canExecute() {
+		return errors.New("circuit breaker is open")
+	}
+
+	err := fn()
+	if err != nil {
+		cb.recordFailure()
+	} else {
+		cb.recordSuccess()
+	}
+
+	return err
+}
+
+func (cb *CircuitBreaker) canExecute() bool {
+	state := cb.state.Load()
+	
+	switch state {
+	case 0: // closed
+		return true
+	case 1: // open
+		lastFailure := time.Unix(0, cb.lastFailureTime.Load())
+		if time.Since(lastFailure) > cb.resetTimeout {
+			cb.state.CompareAndSwap(1, 2) // transition to half-open
+			return true
+		}
+		return false
+	case 2: // half-open
+		return true
+	default:
+		return false
+	}
+}
+
+func (cb *CircuitBreaker) recordFailure() {
+	cb.failures.Add(1)
+	cb.lastFailureTime.Store(time.Now().UnixNano())
+	
+	if cb.failures.Load() >= int32(cb.maxFailures) {
+		cb.state.Store(1) // open
+	}
+}
+
+func (cb *CircuitBreaker) recordSuccess() {
+	if cb.state.Load() == 2 { // half-open
+		cb.state.Store(0) // closed
+		cb.failures.Store(0)
+	}
+}
+
+// Metrics Exporter
+type MetricsExporter struct {
+	url      string
+	user     string
+	pass     string
+	client   *http.Client
+	counters map[string]int64
+	mu       sync.RWMutex
+}
+
+func NewMetricsExporter(url, user, pass string) *MetricsExporter {
+	return &MetricsExporter{
+		url:      url,
+		user:     user,
+		pass:     pass,
+		client:   &http.Client{Timeout: 5 * time.Second},
+		counters: make(map[string]int64),
+	}
+}
+
+func (m *MetricsExporter) IncrementCounter(name string, value int64) {
+	m.mu.Lock()
+	m.counters[name] += value
+	m.mu.Unlock()
+}
+
+func (m *MetricsExporter) RecordError(service, errorType string) {
+	m.IncrementCounter(fmt.Sprintf("%s_%s_errors", service, errorType), 1)
+}
+
+func (m *MetricsExporter) RecordDuration(name string, duration time.Duration) {
+	slog.Debug("Metric recorded", "name", name, "duration_ms", duration.Milliseconds())
+}
+
+// Data Integrity Checker
+type DataIntegrityChecker struct {
+	metricsExporter *MetricsExporter
+}
+
+func NewDataIntegrityChecker(metrics *MetricsExporter) *DataIntegrityChecker {
+	return &DataIntegrityChecker{metricsExporter: metrics}
+}
+
+func (d *DataIntegrityChecker) VerifyAndRecord(logType, fileName string, processedLines, expectedLines int) {
+	if processedLines != expectedLines {
+		d.metricsExporter.IncrementCounter("data_integrity_mismatches", 1)
+		slog.Warn("Data integrity mismatch", 
+			"log_type", logType,
+			"file", fileName,
+			"processed", processedLines,
+			"expected", expectedLines)
+	}
+}
+
+// HTTP Connection Pool
+type HTTPConnectionPool struct {
+	clients chan *http.Client
+	size    int
+}
+
+func NewHTTPConnectionPool(size int, timeout time.Duration) *HTTPConnectionPool {
+	pool := &HTTPConnectionPool{
+		clients: make(chan *http.Client, size),
+		size:    size,
+	}
+	
+	// Pre-create clients
+	for i := 0; i < size; i++ {
+		pool.clients <- &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+	}
+	
+	return pool
+}
+
+func (p *HTTPConnectionPool) Get() *http.Client {
+	return <-p.clients
+}
+
+func (p *HTTPConnectionPool) Put(client *http.Client) {
+	p.clients <- client
+}
+
+// Main types
+type Config struct {
+	KafkaBrokers     []string
+	TrackingTable    string
+	JobsTable        string
+	OpenObserveURL   string
+	OpenObserveUser  string
+	OpenObservePass  string
+	OpenObserveStream string
+	ConsumerGroup    string
+	MaxConcurrency   int
+	BatchSize        int
+	BatchTimeout     time.Duration
+	Region           string
+}
+
+type LogMessage struct {
+	InstanceID   string    `json:"instance_id"`
+	ClusterID    string    `json:"cluster_id"`
+	Engine       string    `json:"engine"`
+	LogType      string    `json:"log_type"`
+	LogFileName  string    `json:"log_file_name"`
+	LastWritten  int64     `json:"last_written"`
+	Size         int64     `json:"size"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+type ParsedLogEntry map[string]interface{}
+
+// Batch Processor with optimizations
+type BatchProcessor struct {
+	config           Config
+	rdsClient        *rds.Client
+	dynamoClient     *dynamodb.Client
+	kafkaReader      *kafka.Reader
+	httpPool         *HTTPConnectionPool
+	metricsExporter  *MetricsExporter
+	integrityChecker *DataIntegrityChecker
+	circuitBreaker   *CircuitBreaker
+	shutdownChan     chan struct{}
+	workerCount      int
+}
+
+type BatchItem struct {
+	Message kafka.Message
+	LogMsg  LogMessage
+}
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
+	slog.Info("Starting Aurora Log Processor", "version", "2.0", "go_version", runtime.Version())
+
+	if len(os.Args) > 1 && os.Args[1] == "-health" {
+		fmt.Println("OK")
+		os.Exit(0)
+	}
+
+	cfg := Config{
+		KafkaBrokers:     strings.Split(os.Getenv("KAFKA_BROKERS"), ","),
+		TrackingTable:    os.Getenv("TRACKING_TABLE"),
+		JobsTable:        os.Getenv("JOBS_TABLE"),
+		OpenObserveURL:   os.Getenv("OPENOBSERVE_URL"),
+		OpenObserveUser:  os.Getenv("OPENOBSERVE_USER"),
+		OpenObservePass:  os.Getenv("OPENOBSERVE_PASS"),
+		OpenObserveStream: getEnvOrDefault("OPENOBSERVE_STREAM", "aurora_logs"),
+		ConsumerGroup:    getEnvOrDefault("CONSUMER_GROUP", "aurora-processor-group"),
+		MaxConcurrency:   getEnvAsInt("MAX_CONCURRENCY", 10),
+		BatchSize:        getEnvAsInt("BATCH_SIZE", 100),
+		BatchTimeout:     time.Duration(getEnvAsInt("BATCH_TIMEOUT_SEC", 5)) * time.Second,
+		Region:           os.Getenv("AWS_REGION"),
+	}
+
+	// Configure AWS SDK with IMDSv2 support
+	// Set environment variables for IMDSv2
+	os.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE", "IPv4")
+	os.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", "http://169.254.169.254")
+	
+	awsCfg, err := config.LoadDefaultConfig(context.Background(), 
+		config.WithRegion(cfg.Region),
+		config.WithEC2IMDSRegion(),
+	)
+	if err != nil {
+		slog.Error("Failed to load AWS config", "error", err)
+		os.Exit(1)
+	}
+
+	kafkaReader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:        cfg.KafkaBrokers,
+		GroupTopics:    []string{"aurora-logs-error", "aurora-logs-slowquery"},
+		GroupID:        cfg.ConsumerGroup,
+		MinBytes:       10e3, // 10KB
+		MaxBytes:       10e6, // 10MB
+		CommitInterval: time.Second,
+		StartOffset:    kafka.FirstOffset,
+		ErrorLogger:    kafka.LoggerFunc(func(msg string, args ...interface{}) {
+			slog.Error("Kafka error", "msg", fmt.Sprintf(msg, args...))
+		}),
+	})
+	defer func() {
+		if err := kafkaReader.Close(); err != nil {
+			slog.Error("Failed to close kafka reader", "error", err)
+		}
+	}()
+
+	metricsExporter := NewMetricsExporter(
+		cfg.OpenObserveURL,
+		cfg.OpenObserveUser,
+		cfg.OpenObservePass,
+	)
+
+	processor := &BatchProcessor{
+		config:           cfg,
+		rdsClient:        rds.NewFromConfig(awsCfg),
+		dynamoClient:     dynamodb.NewFromConfig(awsCfg),
+		kafkaReader:      kafkaReader,
+		httpPool:         NewHTTPConnectionPool(20, 30*time.Second),
+		metricsExporter:  metricsExporter,
+		integrityChecker: NewDataIntegrityChecker(metricsExporter),
+		circuitBreaker:   NewCircuitBreaker(5, 30*time.Second),
+		shutdownChan:     make(chan struct{}),
+		workerCount:      cfg.MaxConcurrency,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigChan
+		slog.Info("Received shutdown signal", "signal", sig)
+		close(processor.shutdownChan)
+		cancel()
+	}()
+
+	if err := processor.Start(ctx); err != nil {
+		slog.Error("Processor failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func (bp *BatchProcessor) Start(ctx context.Context) error {
+	// Create channels
+	itemsChan := make(chan BatchItem, bp.config.BatchSize*2)
+	var wg sync.WaitGroup
+	
+	// Start workers
+	for i := 0; i < bp.workerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			bp.worker(ctx, workerID, itemsChan)
+		}(i)
+	}
+	
+	// Start batch collector
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bp.batchCollector(ctx, itemsChan)
+	}()
+	
+	// Wait for completion
+	wg.Wait()
+	return nil
+}
+
+func (bp *BatchProcessor) batchCollector(ctx context.Context, itemsChan chan<- BatchItem) {
+	defer close(itemsChan)
+	
+	batch := make([]BatchItem, 0, bp.config.BatchSize)
+	ticker := time.NewTicker(bp.config.BatchTimeout)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			// Process remaining batch
+			if len(batch) > 0 {
+				bp.processBatch(ctx, batch, itemsChan)
+			}
+			return
+			
+		case <-bp.shutdownChan:
+			// Process remaining batch
+			if len(batch) > 0 {
+				bp.processBatch(ctx, batch, itemsChan)
+			}
+			return
+			
+		case <-ticker.C:
+			if len(batch) > 0 {
+				bp.processBatch(ctx, batch, itemsChan)
+				batch = make([]BatchItem, 0, bp.config.BatchSize)
+			}
+			
+		default:
+			// Fetch message
+			msg, err := bp.kafkaReader.FetchMessage(ctx)
+			if err != nil {
+				if ctx.Err() != nil || errors.Is(err, io.EOF) {
+					return
+				}
+				continue
+			}
+			
+			// Parse message
+			var logMsg LogMessage
+			if err := json.Unmarshal(msg.Value, &logMsg); err != nil {
+				slog.Error("Failed to unmarshal message", "error", err)
+				if err := bp.kafkaReader.CommitMessages(ctx, msg); err != nil {
+					slog.Error("Failed to commit message", "error", err)
+				}
+				continue
+			}
+			
+			batch = append(batch, BatchItem{
+				Message: msg,
+				LogMsg:  logMsg,
+			})
+			
+			if len(batch) >= bp.config.BatchSize {
+				bp.processBatch(ctx, batch, itemsChan)
+				batch = make([]BatchItem, 0, bp.config.BatchSize)
+			}
+		}
+	}
+}
+
+func (bp *BatchProcessor) processBatch(ctx context.Context, batch []BatchItem, itemsChan chan<- BatchItem) {
+	// Group by instance for efficient processing
+	grouped := make(map[string][]BatchItem)
+	for _, item := range batch {
+		key := item.LogMsg.InstanceID
+		grouped[key] = append(grouped[key], item)
+	}
+	
+	slog.Info("Processing batch", "total_items", len(batch), "instances", len(grouped))
+	
+	// Send to workers
+	for _, items := range grouped {
+		for _, item := range items {
+			select {
+			case itemsChan <- item:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (bp *BatchProcessor) worker(ctx context.Context, workerID int, itemsChan <-chan BatchItem) {
+	for {
+		select {
+		case item, ok := <-itemsChan:
+			if !ok {
+				return
+			}
+			
+			// Process with circuit breaker
+			err := bp.circuitBreaker.Call(func() error {
+				return bp.processLogOptimized(ctx, item.LogMsg)
+			})
+			
+			if err != nil {
+				slog.Error("Failed to process log", 
+					"worker", workerID,
+					"instance", item.LogMsg.InstanceID,
+					"file", item.LogMsg.LogFileName,
+					"error", err)
+				bp.metricsExporter.RecordError("processor", "processing_failed")
+			}
+			
+			// Commit message
+			if err := bp.kafkaReader.CommitMessages(ctx, item.Message); err != nil {
+				slog.Error("Failed to commit message", "error", err)
+			}
+			
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMessage) error {
+	startTime := time.Now()
+	defer func() {
+		bp.metricsExporter.RecordDuration("log_processing_duration", time.Since(startTime))
+	}()
+	
+	slog.Info("Processing log", "instance_id", logMsg.InstanceID, "file", logMsg.LogFileName, "size", logMsg.Size)
+	
+	// Update status to 'processing'
+	if err := bp.updateLogStatus(ctx, logMsg, "processing", "", 0); err != nil {
+		slog.Error("Failed to update status to processing", "error", err)
+	}
+	
+	// Download log with streaming
+	reader, err := bp.downloadLogStreaming(ctx, logMsg, "")
+	if err != nil {
+		// Update status to 'failed'
+		if statusErr := bp.updateLogStatus(ctx, logMsg, "failed", fmt.Sprintf("Download failed: %v", err), 0); statusErr != nil {
+			slog.Error("Failed to update status to failed", "error", statusErr)
+		}
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			slog.Error("Failed to close reader", "error", err)
+		}
+	}()
+	
+	// Parse and process log
+	parser := bp.getParser(logMsg.LogType)
+	batch := make([]ParsedLogEntry, 0, 1000)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // 10MB max line
+	
+	lineCount := 0
+	parsedCount := 0
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineCount++
+		
+		// Parse line
+		entry := parser(line)
+		if entry != nil {
+			// Add metadata
+			entry["log_type"] = logMsg.LogType
+			entry["instance_id"] = logMsg.InstanceID
+			entry["cluster_id"] = logMsg.ClusterID
+			entry["log_file_name"] = logMsg.LogFileName
+			entry["@timestamp"] = time.Now().Format(time.RFC3339)
+			
+			parsedCount++
+			batch = append(batch, entry)
+			
+			// Send batch when full
+			if len(batch) >= 1000 {
+				if err := bp.sendBatch(ctx, logMsg, batch); err != nil {
+					slog.Warn("Failed to send batch", "error", err)
+				}
+				batch = make([]ParsedLogEntry, 0, 1000)
+			}
+		}
+	}
+	
+	if err := scanner.Err(); err != nil {
+		// Update status to 'failed'
+		if statusErr := bp.updateLogStatus(ctx, logMsg, "failed", fmt.Sprintf("Scanner error: %v", err), lineCount); statusErr != nil {
+			slog.Error("Failed to update status to failed", "error", statusErr)
+		}
+		return fmt.Errorf("error reading log file: %w", err)
+	}
+	
+	// Send final batch
+	if len(batch) > 0 {
+		if err := bp.sendBatch(ctx, logMsg, batch); err != nil {
+			slog.Warn("Failed to send final batch", "error", err)
+		}
+	}
+	
+	// Update status to 'completed'
+	if err := bp.updateLogStatus(ctx, logMsg, "completed", "", lineCount); err != nil {
+		slog.Error("Failed to update status to completed", "error", err)
+		// Don't fail the whole process if status update fails
+	}
+	
+	slog.Info("Processing completed", 
+		"instance_id", logMsg.InstanceID,
+		"file", logMsg.LogFileName,
+		"total_lines", lineCount,
+		"parsed_entries", parsedCount,
+		"log_type", logMsg.LogType)
+	
+	return nil
+}
+
+// Streaming download implementation
+func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMessage, startMarker string) (io.ReadCloser, error) {
+	pr, pw := io.Pipe()
+	
+	go func() {
+		defer func() {
+			if err := pw.Close(); err != nil {
+				slog.Error("Failed to close pipe writer", "error", err)
+			}
+		}()
+		
+		marker := startMarker
+		if marker == "" || marker == "end" {
+			marker = "0"
+		}
+		
+		for {
+			select {
+			case <-ctx.Done():
+				pw.CloseWithError(ctx.Err())
+				return
+			default:
+			}
+			
+			output, err := bp.rdsClient.DownloadDBLogFilePortion(ctx, &rds.DownloadDBLogFilePortionInput{
+				DBInstanceIdentifier: &logMsg.InstanceID,
+				LogFileName:          &logMsg.LogFileName,
+				Marker:               &marker,
+				NumberOfLines:        aws.Int32(10000), // Download in chunks
+			})
+			
+			if err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+			
+			if output.LogFileData != nil && len(*output.LogFileData) > 0 {
+				if _, err := pw.Write([]byte(*output.LogFileData)); err != nil {
+					pw.CloseWithError(err)
+					return
+				}
+			}
+			
+			// Update marker
+			if output.Marker != nil {
+				marker = *output.Marker
+			}
+			
+			// Check if done
+			if output.AdditionalDataPending == nil || !*output.AdditionalDataPending {
+				return
+			}
+		}
+	}()
+	
+	return pr, nil
+}
+
+
+func (bp *BatchProcessor) updateLogStatus(ctx context.Context, logMsg LogMessage, status string, errorMessage string, lineCount int) error {
+	updateExpr := "SET #status = :status, #updated_at = :updated_at"
+	exprNames := map[string]string{
+		"#status":     "status",
+		"#updated_at": "updated_at",
+	}
+	exprValues := map[string]dynamoTypes.AttributeValue{
+		":status":     &dynamoTypes.AttributeValueMemberS{Value: status},
+		":updated_at": &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+	}
+	
+	// Add specific fields based on status
+	switch status {
+	case "processing":
+		updateExpr += ", processing_started_at = :processing_started_at"
+		exprValues[":processing_started_at"] = &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)}
+	case "completed":
+		updateExpr += ", processing_completed_at = :processing_completed_at, lines_processed = :lines_processed"
+		exprValues[":processing_completed_at"] = &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)}
+		exprValues[":lines_processed"] = &dynamoTypes.AttributeValueMemberN{Value: strconv.Itoa(lineCount)}
+	case "failed":
+		updateExpr += ", error_message = :error_message, processing_failed_at = :processing_failed_at"
+		exprValues[":error_message"] = &dynamoTypes.AttributeValueMemberS{Value: errorMessage}
+		exprValues[":processing_failed_at"] = &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)}
+	}
+	
+	_, err := bp.dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &bp.config.TrackingTable,
+		Key: map[string]dynamoTypes.AttributeValue{
+			"instance_id":   &dynamoTypes.AttributeValueMemberS{Value: logMsg.InstanceID},
+			"log_file_name": &dynamoTypes.AttributeValueMemberS{Value: logMsg.LogFileName},
+		},
+		UpdateExpression:          &updateExpr,
+		ExpressionAttributeNames:  exprNames,
+		ExpressionAttributeValues: exprValues,
+	})
+	
+	return err
+}
+
+func (bp *BatchProcessor) sendBatch(ctx context.Context, logMsg LogMessage, batch []ParsedLogEntry) error {
+	httpClient := bp.httpPool.Get()
+	defer bp.httpPool.Put(httpClient)
+	
+	// Convert batch to JSON array
+	jsonData, err := json.Marshal(batch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal batch: %w", err)
+	}
+	
+	// Use different streams based on log type
+	streamName := bp.config.OpenObserveStream
+	switch logMsg.LogType {
+	case "error":
+		streamName = "aurora_error_logs"
+	case "slowquery":
+		streamName = "aurora_slowquery_logs"
+	}
+	
+	url := fmt.Sprintf("%s/api/default/%s/_json", bp.config.OpenObserveURL, streamName)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
+	if err != nil {
+		return err
+	}
+	
+	req.SetBasicAuth(bp.config.OpenObserveUser, bp.config.OpenObservePass)
+	req.Header.Set("Content-Type", "application/json")
+	
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error("Failed to close response body", "error", err)
+		}
+	}()
+	
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+	
+	return nil
+}
+
+func (bp *BatchProcessor) getParser(logType string) func(string) ParsedLogEntry {
+	switch logType {
+	case "error":
+		return parseErrorLog
+	case "slowquery":
+		return parseSlowQueryLog
+	default:
+		return parseGenericLog
+	}
+}
+
+// Parser functions
+func parseErrorLog(line string) ParsedLogEntry {
+	// Skip empty lines
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	
+	// Aurora MySQL error log format: YYYY-MM-DD HH:MM:SS [Note/Warning/ERROR] message
+	// Example: 2025-08-02 12:34:56 140234567890 [ERROR] Access denied for user...
+	if len(line) > 19 && line[4] == '-' && line[7] == '-' && line[10] == ' ' && line[13] == ':' && line[16] == ':' {
+		timestamp := line[:19]
+		remainder := line[19:]
+		
+		// Extract level
+		level := "INFO"
+		message := remainder
+		
+		if idx := strings.Index(remainder, "[ERROR]"); idx != -1 {
+			level = "ERROR"
+			message = strings.TrimSpace(remainder[idx+7:])
+		} else if idx := strings.Index(remainder, "[Warning]"); idx != -1 {
+			level = "WARNING"
+			message = strings.TrimSpace(remainder[idx+9:])
+		} else if idx := strings.Index(remainder, "[Note]"); idx != -1 {
+			level = "INFO"
+			message = strings.TrimSpace(remainder[idx+6:])
+		}
+		
+		return ParsedLogEntry{
+			"timestamp": timestamp,
+			"level":     level,
+			"message":   message,
+			"raw_line":  line,
+		}
+	}
+	
+	// If can't parse, return raw line
+	return ParsedLogEntry{
+		"message":  line,
+		"raw_line": line,
+	}
+}
+
+func parseSlowQueryLog(line string) ParsedLogEntry {
+	// Skip empty lines
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	
+	// MySQL slow query log parsing
+	if strings.HasPrefix(line, "# Time:") {
+		timestamp := strings.TrimSpace(strings.TrimPrefix(line, "# Time:"))
+		return ParsedLogEntry{
+			"timestamp": timestamp,
+			"event_type": "query_start",
+		}
+	}
+	
+	if strings.HasPrefix(line, "# User@Host:") {
+		userHost := strings.TrimSpace(strings.TrimPrefix(line, "# User@Host:"))
+		// Parse user and host
+		if match := strings.Contains(userHost, "["); match {
+			parts := strings.Split(userHost, "[")
+			userPart := strings.TrimSpace(parts[0])
+			hostPart := ""
+			if len(parts) > 1 {
+				hostPart = strings.TrimSuffix(parts[1], "]")
+			}
+			return ParsedLogEntry{
+				"user_host": userHost,
+				"user": userPart,
+				"host": hostPart,
+				"event_type": "query_metadata",
+			}
+		}
+		return ParsedLogEntry{
+			"user_host": userHost,
+			"event_type": "query_metadata",
+		}
+	}
+	
+	if strings.HasPrefix(line, "# Query_time:") {
+		parts := strings.Fields(line)
+		result := ParsedLogEntry{
+			"event_type": "query_stats",
+		}
+		
+		// Parse key-value pairs
+		for i := 0; i < len(parts)-1; i++ {
+			if strings.HasSuffix(parts[i], ":") {
+				key := strings.ToLower(strings.TrimSuffix(parts[i], ":"))
+				key = strings.TrimPrefix(key, "#")
+				key = strings.TrimSpace(key)
+				if i+1 < len(parts) {
+					value := parts[i+1]
+					// Try to parse numeric values
+					if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+						result[key] = floatVal
+					} else {
+						result[key] = value
+					}
+				}
+			}
+		}
+		return result
+	}
+	
+	// Handle SQL statements (non-comment lines)
+	if !strings.HasPrefix(line, "#") && strings.TrimSpace(line) != "" {
+		return ParsedLogEntry{
+			"sql_statement": line,
+			"event_type": "query_sql",
+		}
+	}
+	
+	return nil
+}
+
+func parseGenericLog(line string) ParsedLogEntry {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	
+	return ParsedLogEntry{
+		"message": line,
+		"raw_line": line,
+	}
+}
