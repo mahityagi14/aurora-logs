@@ -273,17 +273,8 @@ pipeline {
                             ${ECR_REGISTRY}/${APP_NAME}:processor-latest
                     """
                     
-                    // Build other services normally
-                    def otherServices = ['kafka', 'openobserve']
-                    otherServices.each { service ->
-                        sh """
-                            cd ${service}
-                            docker build -t ${ECR_REGISTRY}/${APP_NAME}:${service}-${IMAGE_TAG} .
-                            docker tag ${ECR_REGISTRY}/${APP_NAME}:${service}-${IMAGE_TAG} \
-                                ${ECR_REGISTRY}/${APP_NAME}:${service}-latest
-                            cd ..
-                        """
-                    }
+                    // Note: Kafka and OpenObserve now use official Docker Hub images
+                    // Only building discovery and processor services
                 }
             }
         }
@@ -293,7 +284,7 @@ pipeline {
                 stage('Trivy Scan') {
                     steps {
                         script {
-                            def services = ['discovery', 'processor', 'kafka', 'openobserve']
+                            def services = ['discovery', 'processor']
                             
                             // Install latest Trivy
                             sh '''
@@ -336,7 +327,7 @@ pipeline {
                 stage('Grype Scan') {
                     steps {
                         script {
-                            def services = ['discovery', 'processor', 'kafka', 'openobserve']
+                            def services = ['discovery', 'processor']
                             
                             // Install latest Grype
                             sh '''
@@ -367,7 +358,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            def services = ['discovery', 'processor', 'kafka', 'openobserve']
+                            def services = ['discovery', 'processor']
                             
                             // Install Snyk CLI
                             sh '''
@@ -404,7 +395,7 @@ pipeline {
                 stage('Docker Scout') {
                     steps {
                         script {
-                            def services = ['discovery', 'processor', 'kafka', 'openobserve']
+                            def services = ['discovery', 'processor']
                             
                             // Docker Scout analysis
                             services.each { service ->
@@ -537,8 +528,8 @@ pipeline {
                         # Login to ECR
                         aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
                         
-                        # Push images
-                        for service in discovery processor kafka openobserve; do
+                        # Push images (only discovery and processor)
+                        for service in discovery processor; do
                             docker push ${ECR_REGISTRY}/${APP_NAME}:${service}-${IMAGE_TAG}
                             if [ "${GIT_BRANCH}" = "main" ]; then
                                 docker push ${ECR_REGISTRY}/${APP_NAME}:${service}-latest

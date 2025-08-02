@@ -4,7 +4,7 @@ metadata:
   name: discovery
   namespace: aurora-logs
 spec:
-  replicas: 2  # Multiple instances for HA  # POC: 1; Production: 5-10 with sharding
+  replicas: 1  # Multiple instances for HA  # POC: 1; Production: 5-10 with sharding
   selector:
     matchLabels:
       app: discovery
@@ -15,7 +15,7 @@ spec:
     spec:
       serviceAccountName: discovery-sa
       nodeSelector:
-        kubernetes.io/arch: arm64
+        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
       # hostNetwork: false for cluster DNS resolution
       dnsPolicy: ClusterFirst
       affinity:
@@ -77,22 +77,23 @@ spec:
           limits:
             cpu: "250m"
             memory: "512Mi"
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: metrics
-          initialDelaySeconds: 30
-          periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: metrics
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+        # Health checks disabled temporarily
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: metrics
+        #   initialDelaySeconds: 30
+        #   periodSeconds: 30
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
+        # readinessProbe:
+        #   httpGet:
+        #     path: /readyz
+        #     port: metrics
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 10
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
         volumeMounts:
         - name: tmp
           mountPath: /tmp

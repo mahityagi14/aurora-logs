@@ -227,6 +227,7 @@ type Config struct {
 	OpenObserveURL   string
 	OpenObserveUser  string
 	OpenObservePass  string
+	OpenObserveStream string
 	ConsumerGroup    string
 	MaxConcurrency   int
 	BatchSize        int
@@ -292,6 +293,7 @@ func main() {
 		OpenObserveURL:   os.Getenv("OPENOBSERVE_URL"),
 		OpenObserveUser:  os.Getenv("OPENOBSERVE_USER"),
 		OpenObservePass:  os.Getenv("OPENOBSERVE_PASS"),
+		OpenObserveStream: getEnvOrDefault("OPENOBSERVE_STREAM", "aurora_logs"),
 		ConsumerGroup:    getEnvOrDefault("CONSUMER_GROUP", "aurora-processor-group"),
 		MaxConcurrency:   getEnvAsInt("MAX_CONCURRENCY", 10),
 		BatchSize:        getEnvAsInt("BATCH_SIZE", 100),
@@ -586,6 +588,12 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 		// Parse line
 		entry := parser(line)
 		if entry != nil {
+			// Add metadata
+			entry["log_type"] = logMsg.LogType
+			entry["instance_id"] = logMsg.InstanceID
+			entry["cluster_id"] = logMsg.ClusterID
+			
+			lineCount++
 			batch = append(batch, entry)
 			
 			// Send batch when full
@@ -749,7 +757,7 @@ func (bp *BatchProcessor) sendBatch(ctx context.Context, logMsg LogMessage, batc
 		}
 	}
 	
-	url := fmt.Sprintf("%s/api/default/%s/_json", bp.config.OpenObserveURL, logMsg.LogType)
+	url := fmt.Sprintf("%s/api/default/%s/_json", bp.config.OpenObserveURL, bp.config.OpenObserveStream)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
 	if err != nil {
 		return err
