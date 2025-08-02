@@ -307,7 +307,6 @@ func main() {
 	awsCfg, err := config.LoadDefaultConfig(context.Background(), 
 		config.WithRegion(cfg.Region),
 		config.WithEC2IMDSRegion(),
-		config.WithEC2IMDSEndpointMode(aws.EC2IMDSEndpointModeStateIPv4),
 	)
 	if err != nil {
 		slog.Error("Failed to load AWS config", "error", err)
