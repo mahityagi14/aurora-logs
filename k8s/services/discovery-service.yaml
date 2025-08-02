@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-service
+  namespace: aurora-logs
+  labels:
+    app: discovery
+    component: backend
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: discovery
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-headless
+  namespace: aurora-logs
+  labels:
+    app: discovery
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for service discovery
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  selector:
+    app: discovery

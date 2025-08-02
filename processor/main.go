@@ -644,7 +644,7 @@ func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMe
 		}()
 		
 		marker := startMarker
-		if marker == "" {
+		if marker == "" || marker == "end" {
 			marker = "0"
 		}
 		

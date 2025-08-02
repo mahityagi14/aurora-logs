@@ -22,13 +22,50 @@ spec:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
         effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: fluent-bit
         image: fluent/fluent-bit:4.0.5  # Latest as of July 2025
         imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - DAC_OVERRIDE  # Required to read container logs
         env:
-        - name: OPENOBSERVE_AUTH
-          value: "Basic YWRtaW5AcG9jLmNvbTphZG1pbjEyMw=="  # Base64 of admin@poc.com:admin123
+        - name: OPENOBSERVE_USER
+          valueFrom:
+            secretKeyRef:
+              name: fluent-bit-credentials
+              key: username
+        - name: OPENOBSERVE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fluent-bit-credentials
+              key: password
+        - name: OPENOBSERVE_URL
+          value: "http://openobserve-service.aurora-logs.svc.cluster.local:5080"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         resources:
           limits:
             memory: 200Mi
