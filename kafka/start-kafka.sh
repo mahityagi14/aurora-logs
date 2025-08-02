@@ -24,11 +24,8 @@ if [ -z "$CLUSTER_ID" ]; then
     echo "Generated Cluster ID: $CLUSTER_ID"
 fi
 
-# Format storage if not already formatted
-if [ ! -f "$KAFKA_LOG_DIRS/meta.properties" ]; then
-    echo "Formatting Kafka storage..."
-    kafka-storage format -t $CLUSTER_ID -c /etc/kafka/kraft/server.properties
-fi
+# Create config directory
+mkdir -p /etc/kafka/kraft
 
 # Create server.properties for KRaft mode
 cat > /etc/kafka/kraft/server.properties <<EOF
@@ -69,6 +66,12 @@ auto.create.topics.enable=$KAFKA_AUTO_CREATE_TOPICS_ENABLE
 compression.type=producer
 delete.topic.enable=true
 EOF
+
+# Format storage if not already formatted
+if [ ! -f "$KAFKA_LOG_DIRS/meta.properties" ]; then
+    echo "Formatting Kafka storage..."
+    kafka-storage format -t $CLUSTER_ID -c /etc/kafka/kraft/server.properties
+fi
 
 echo "Starting Kafka server..."
 exec kafka-server-start /etc/kafka/kraft/server.properties

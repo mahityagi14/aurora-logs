@@ -27,10 +27,10 @@ data:
   OPENOBSERVE_STREAM: "aurora_logs"
   
   # Kafka Configuration
-  KAFKA_BROKERS: "kafka-broker.aurora-logs.svc.cluster.local:9092"
+  KAFKA_BROKERS: "kafka-broker-service.aurora-logs.svc.cluster.local:9092"
   KAFKA_TOPIC: "aurora-logs"
   KAFKA_PARTITION_COUNT: "10"
-  KAFKA_REPLICATION_FACTOR: "3"
+  KAFKA_REPLICATION_FACTOR: "1"
   KAFKA_COMPRESSION_TYPE: "snappy"
   
   # Valkey/Redis Configuration (ElastiCache)
