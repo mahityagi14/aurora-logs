@@ -750,15 +750,14 @@ func (bp *BatchProcessor) sendBatch(ctx context.Context, logMsg LogMessage, batc
 	httpClient := bp.httpPool.Get()
 	defer bp.httpPool.Put(httpClient)
 	
-	var buf bytes.Buffer
-	for _, entry := range batch {
-		if err := json.NewEncoder(&buf).Encode(entry); err != nil {
-			return err
-		}
+	// Convert batch to JSON array
+	jsonData, err := json.Marshal(batch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal batch: %w", err)
 	}
 	
 	url := fmt.Sprintf("%s/api/default/%s/_json", bp.config.OpenObserveURL, bp.config.OpenObserveStream)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &buf)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
 	if err != nil {
 		return err
 	}
