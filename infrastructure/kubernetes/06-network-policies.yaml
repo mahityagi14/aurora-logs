@@ -1,0 +1,338 @@
+---
+# Network Policy for Discovery Service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: discovery-network-policy
+  namespace: aurora-logs
+spec:
+  podSelector:
+    matchLabels:
+      app: discovery
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow metrics scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+  # Allow health checks from kubelet
+  - from:
+    - namespaceSelector: {}
+      podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow Kafka access
+  - to:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - protocol: TCP
+      port: 9092
+  # Allow Valkey/Redis access
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow AWS API access (RDS, DynamoDB)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# Network Policy for Processor Service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: processor-network-policy
+  namespace: aurora-logs
+spec:
+  podSelector:
+    matchLabels:
+      app: processor
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow metrics scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+  # Allow health checks
+  - from:
+    - namespaceSelector: {}
+      podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow Kafka access
+  - to:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - protocol: TCP
+      port: 9092
+  # Allow OpenObserve access
+  - to:
+    - podSelector:
+        matchLabels:
+          app: openobserve
+    ports:
+    - protocol: TCP
+      port: 5080
+  # Allow AWS API access (RDS, DynamoDB, S3)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# Network Policy for Kafka
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-network-policy
+  namespace: aurora-logs
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow Kafka client connections
+  - from:
+    - podSelector:
+        matchLabels:
+          app: discovery
+    - podSelector:
+        matchLabels:
+          app: processor
+    ports:
+    - protocol: TCP
+      port: 9092
+  # Allow inter-broker communication
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - protocol: TCP
+      port: 9093
+  # Allow metrics
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9308
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow inter-broker communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app: kafka
+    ports:
+    - protocol: TCP
+      port: 9093
+---
+# Network Policy for OpenObserve
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openobserve-network-policy
+  namespace: aurora-logs
+spec:
+  podSelector:
+    matchLabels:
+      app: openobserve
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow processor to send logs
+  - from:
+    - podSelector:
+        matchLabels:
+          app: processor
+    ports:
+    - protocol: TCP
+      port: 5080
+  # Allow UI access from ALB
+  - from:
+    - namespaceSelector: {}
+      podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 5080
+  # Allow metrics scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow S3 access for storage
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# Network Policy for Valkey
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-network-policy
+  namespace: aurora-logs
+spec:
+  podSelector:
+    matchLabels:
+      app: valkey
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow Redis client connections
+  - from:
+    - podSelector:
+        matchLabels:
+          app: discovery
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow metrics
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 9121
+  egress:
+  # Allow DNS only
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# Default deny all ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: aurora-logs
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress

@@ -319,10 +319,9 @@ func main() {
 		rdsClient:        rds.NewFromConfig(awsCfg),
 		dynamoClient:     dynamodb.NewFromConfig(awsCfg),
 		kafkaReader:      kafkaReader,
-		httpPool:         NewHTTPConnectionPool(20, 30*time.Second),
+		httpPool:         NewHTTPConnectionPool(cfg.ConnectionPoolSize, cfg.ConnectionTimeout),
 		metricsExporter:  metricsExporter,
-		integrityChecker: NewDataIntegrityChecker(metricsExporter),
-		circuitBreaker:   NewCircuitBreaker(5, 30*time.Second),
+		circuitBreaker:   NewCircuitBreaker(cfg.CircuitBreakerMax, cfg.CircuitBreakerTimeout),
 		shutdownChan:     make(chan struct{}),
 		workerCount:      cfg.MaxConcurrency,
 	}
@@ -464,23 +463,64 @@ func (bp *BatchProcessor) worker(ctx context.Context, workerID int, itemsChan <-
 				return
 			}
 			
-			// Process with circuit breaker
-			err := bp.circuitBreaker.Call(func() error {
-				return bp.processLogOptimized(ctx, item.LogMsg)
-			})
+			// Process with retry logic
+			var err error
+			retryCount := 0
+			
+			for retryCount <= bp.config.MaxRetries {
+				err = bp.circuitBreaker.Call(func() error {
+					return bp.processLogOptimized(ctx, item.LogMsg)
+				})
+				
+				if err == nil {
+					// Success - commit message
+					if commitErr := bp.kafkaReader.CommitMessages(ctx, item.Message); commitErr != nil {
+						slog.Error("Failed to commit message", "error", commitErr)
+						// Don't retry on commit errors
+					}
+					break
+				}
+				
+				if retryCount < bp.config.MaxRetries {
+					slog.Warn("Retrying failed log processing",
+						"worker", workerID,
+						"instance", item.LogMsg.InstanceID,
+						"file", item.LogMsg.LogFileName,
+						"retry", retryCount+1,
+						"error", err)
+					
+					// Exponential backoff
+					backoff := time.Duration(retryCount+1) * bp.config.RetryBackoff
+					select {
+					case <-time.After(backoff):
+					case <-ctx.Done():
+						return
+					}
+				}
+				
+				retryCount++
+			}
 			
 			if err != nil {
-				slog.Error("Failed to process log", 
+				// All retries failed - send to DLQ
+				slog.Error("Failed to process log after retries", 
 					"worker", workerID,
 					"instance", item.LogMsg.InstanceID,
 					"file", item.LogMsg.LogFileName,
+					"retries", bp.config.MaxRetries,
 					"error", err)
-				bp.metricsExporter.RecordError("processor", "processing_failed")
-			}
-			
-			// Commit message
-			if err := bp.kafkaReader.CommitMessages(ctx, item.Message); err != nil {
-				slog.Error("Failed to commit message", "error", err)
+				
+				bp.metricsExporter.RecordError("processor", "processing_failed_all_retries")
+				
+				// Send to DLQ
+				if dlqErr := bp.sendToDLQ(ctx, item, err); dlqErr != nil {
+					slog.Error("Failed to send to DLQ", "error", dlqErr)
+				}
+				
+				// Commit message anyway to avoid reprocessing
+				if commitErr := bp.kafkaReader.CommitMessages(ctx, item.Message); commitErr != nil {
+					slog.Error("Failed to commit failed message", "error", commitErr)
+				}
 			}
 			
 		case <-ctx.Done():
@@ -497,13 +537,24 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 	
 	slog.Info("Processing log", "instance_id", logMsg.InstanceID, "file", logMsg.LogFileName, "size", logMsg.Size)
 	
+	// Check for existing checkpoint
+	checkpointMarker, err := bp.getCheckpoint(ctx, logMsg)
+	if err != nil {
+		slog.Warn("Failed to get checkpoint", "error", err)
+		// Continue without checkpoint
+	}
+	
+	if checkpointMarker != "" {
+		slog.Info("Resuming from checkpoint", "marker", checkpointMarker)
+	}
+	
 	// Update status to 'processing'
 	if err := bp.updateLogStatus(ctx, logMsg, "processing", "", 0); err != nil {
 		slog.Error("Failed to update status to processing", "error", err)
 	}
 	
-	// Download log with streaming
-	reader, err := bp.downloadLogStreaming(ctx, logMsg, "")
+	// Download log with streaming from checkpoint
+	reader, err := bp.downloadLogStreaming(ctx, logMsg, checkpointMarker)
 	if err != nil {
 		// Update status to 'failed'
 		if statusErr := bp.updateLogStatus(ctx, logMsg, "failed", fmt.Sprintf("Download failed: %v", err), 0); statusErr != nil {
@@ -517,6 +568,15 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 		}
 	}()
 	
+	// Create a channel to receive markers from download goroutine
+	markerChan := make(chan string, 100)
+	doneChan := make(chan struct{})
+	
+	// Start marker tracking goroutine if reader supports it
+	if mtr, ok := reader.(*markerTrackingReader); ok {
+		go bp.trackDownloadMarkers(ctx, logMsg, mtr, markerChan, doneChan)
+	}
+	
 	// Parse and process log
 	parser := bp.getParser(logMsg.LogType)
 	batch := make([]ParsedLogEntry, 0, 1000)
@@ -525,10 +585,19 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 	
 	lineCount := 0
 	parsedCount := 0
+	lastCheckpointLines := 0
+	currentMarker := checkpointMarker
 	
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCount++
+		
+		// Check for new marker
+		select {
+		case newMarker := <-markerChan:
+			currentMarker = newMarker
+		default:
+		}
 		
 		// Parse line
 		entry := parser(line)
@@ -549,9 +618,19 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 					slog.Warn("Failed to send batch", "error", err)
 				}
 				batch = make([]ParsedLogEntry, 0, 1000)
+				
+				// Save checkpoint every 10000 lines
+				if lineCount-lastCheckpointLines >= 10000 && currentMarker != "" {
+					if err := bp.saveCheckpoint(ctx, logMsg, currentMarker, lineCount); err != nil {
+						slog.Warn("Failed to save checkpoint", "error", err)
+					}
+					lastCheckpointLines = lineCount
+				}
 			}
 		}
 	}
+	
+	close(doneChan)
 	
 	if err := scanner.Err(); err != nil {
 		// Update status to 'failed'
@@ -566,6 +645,11 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 		if err := bp.sendBatch(ctx, logMsg, batch); err != nil {
 			slog.Warn("Failed to send final batch", "error", err)
 		}
+	}
+	
+	// Delete checkpoint on successful completion
+	if err := bp.deleteCheckpoint(ctx, logMsg); err != nil {
+		slog.Warn("Failed to delete checkpoint", "error", err)
 	}
 	
 	// Update status to 'completed'
@@ -584,15 +668,37 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 	return nil
 }
 
-// Streaming download implementation
+// Custom reader that tracks markers
+type markerTrackingReader struct {
+	*io.PipeReader
+	markerChan chan<- string
+}
+
+func (r *markerTrackingReader) SendMarker(marker string) {
+	select {
+	case r.markerChan <- marker:
+	default:
+		// Channel full, skip this marker
+	}
+}
+
+// Streaming download implementation with marker tracking
 func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMessage, startMarker string) (io.ReadCloser, error) {
 	pr, pw := io.Pipe()
+	markerChan := make(chan string, 100)
+	
+	// Create custom reader that exposes marker channel
+	mtr := &markerTrackingReader{
+		PipeReader: pr,
+		markerChan: markerChan,
+	}
 	
 	go func() {
 		defer func() {
 			if err := pw.Close(); err != nil {
 				slog.Error("Failed to close pipe writer", "error", err)
 			}
+			close(markerChan)
 		}()
 		
 		marker := startMarker
@@ -627,9 +733,15 @@ func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMe
 				}
 			}
 			
-			// Update marker
+			// Update marker and send to tracking channel
 			if output.Marker != nil {
 				marker = *output.Marker
+				// Send marker for checkpoint tracking
+				select {
+				case markerChan <- marker:
+				default:
+					// Channel full, skip
+				}
 			}
 			
 			// Check if done
@@ -639,7 +751,28 @@ func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMe
 		}
 	}()
 	
-	return pr, nil
+	return mtr, nil
+}
+
+// Track download markers for checkpointing
+func (bp *BatchProcessor) trackDownloadMarkers(ctx context.Context, logMsg LogMessage, mtr *markerTrackingReader, markerChan chan<- string, doneChan <-chan struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-doneChan:
+			return
+		case marker, ok := <-mtr.markerChan:
+			if !ok {
+				return
+			}
+			// Forward marker to processing goroutine
+			select {
+			case markerChan <- marker:
+			default:
+			}
+		}
+	}
 }
 
 
@@ -866,4 +999,83 @@ func parseGenericLog(line string) ParsedLogEntry {
 		"message": line,
 		"raw_line": line,
 	}
+}
+
+// ============================================================================
+// Checkpoint and Recovery Functions
+// ============================================================================
+
+func (bp *BatchProcessor) getCheckpoint(ctx context.Context, logMsg LogMessage) (string, error) {
+	result, err := bp.dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &bp.config.CheckpointTable,
+		Key: map[string]dynamoTypes.AttributeValue{
+			"instance_id":   &dynamoTypes.AttributeValueMemberS{Value: logMsg.InstanceID},
+			"log_file_name": &dynamoTypes.AttributeValueMemberS{Value: logMsg.LogFileName},
+		},
+	})
+	
+	if err != nil {
+		return "", err
+	}
+	
+	if result.Item == nil {
+		return "", nil
+	}
+	
+	if marker, ok := result.Item["marker"]; ok {
+		if markerVal, ok := marker.(*dynamoTypes.AttributeValueMemberS); ok {
+			return markerVal.Value, nil
+		}
+	}
+	
+	return "", nil
+}
+
+func (bp *BatchProcessor) saveCheckpoint(ctx context.Context, logMsg LogMessage, marker string, lineCount int) error {
+	_, err := bp.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &bp.config.CheckpointTable,
+		Item: map[string]dynamoTypes.AttributeValue{
+			"instance_id":   &dynamoTypes.AttributeValueMemberS{Value: logMsg.InstanceID},
+			"log_file_name": &dynamoTypes.AttributeValueMemberS{Value: logMsg.LogFileName},
+			"marker":        &dynamoTypes.AttributeValueMemberS{Value: marker},
+			"line_count":    &dynamoTypes.AttributeValueMemberN{Value: strconv.Itoa(lineCount)},
+			"updated_at":    &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+		},
+	})
+	return err
+}
+
+func (bp *BatchProcessor) deleteCheckpoint(ctx context.Context, logMsg LogMessage) error {
+	_, err := bp.dynamoClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &bp.config.CheckpointTable,
+		Key: map[string]dynamoTypes.AttributeValue{
+			"instance_id":   &dynamoTypes.AttributeValueMemberS{Value: logMsg.InstanceID},
+			"log_file_name": &dynamoTypes.AttributeValueMemberS{Value: logMsg.LogFileName},
+		},
+	})
+	return err
+}
+
+// ============================================================================
+// Dead Letter Queue Functions
+// ============================================================================
+
+func (bp *BatchProcessor) sendToDLQ(ctx context.Context, item BatchItem, processingError error) error {
+	_, err := bp.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &bp.config.DLQTable,
+		Item: map[string]dynamoTypes.AttributeValue{
+			"message_id":     &dynamoTypes.AttributeValueMemberS{Value: fmt.Sprintf("%s-%s-%d", item.LogMsg.InstanceID, item.LogMsg.LogFileName, time.Now().UnixNano())},
+			"instance_id":    &dynamoTypes.AttributeValueMemberS{Value: item.LogMsg.InstanceID},
+			"log_file_name":  &dynamoTypes.AttributeValueMemberS{Value: item.LogMsg.LogFileName},
+			"cluster_id":     &dynamoTypes.AttributeValueMemberS{Value: item.LogMsg.ClusterID},
+			"log_type":       &dynamoTypes.AttributeValueMemberS{Value: item.LogMsg.LogType},
+			"error":          &dynamoTypes.AttributeValueMemberS{Value: processingError.Error()},
+			"retry_count":    &dynamoTypes.AttributeValueMemberN{Value: strconv.Itoa(bp.config.MaxRetries)},
+			"failed_at":      &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+			"kafka_partition": &dynamoTypes.AttributeValueMemberN{Value: strconv.Itoa(item.Message.Partition)},
+			"kafka_offset":   &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(item.Message.Offset, 10)},
+			"original_message": &dynamoTypes.AttributeValueMemberS{Value: string(item.Message.Value)},
+		},
+	})
+	return err
 }

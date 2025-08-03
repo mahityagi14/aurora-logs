@@ -128,7 +128,9 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_throttle" {
   for_each = var.environment == "production" ? toset([
     var.table_names.instance_metadata,
     var.table_names.tracking,
-    var.table_names.jobs
+    var.table_names.jobs,
+    var.table_names.checkpoints,
+    var.table_names.dlq
   ]) : toset([])
 
   alarm_name          = "${each.value}-throttle-alarm"

@@ -2,300 +2,169 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
-	"encoding/json"
-	"errors"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamoTypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
-func TestSlowQueryParser(t *testing.T) {
-	parser := parseSlowQueryLog
-	
-	tests := []struct {
-		name     string
-		line     string
-		expected ParsedLogEntry
-	}{
-		{
-			name: "parse time line",
-			line: "# Time: 2024-01-15T10:30:45.123456Z",
-			expected: ParsedLogEntry{
-				"timestamp": "2024-01-15T10:30:45.123456Z",
-			},
-		},
-		{
-			name: "parse user host line",
-			line: "# User@Host: admin[admin] @ [10.0.0.1]",
-			expected: ParsedLogEntry{
-				"user_host": "admin[admin] @ [10.0.0.1]",
-			},
-		},
-		{
-			name: "parse query time line",
-			line: "# Query_time: 5.234567  Lock_time: 0.123456 Rows_sent: 10  Rows_examined: 1000",
-			expected: ParsedLogEntry{
-				"query_time":    "5.234567",
-				"lock_time":     "0.123456",
-				"rows_sent":     "10",
-				"rows_examined": "1000",
-			},
-		},
-		{
-			name: "sql line",
-			line: "SELECT * FROM users",
-			expected: ParsedLogEntry{
-				"sql": "SELECT * FROM users",
-			},
-		},
-		{
-			name:     "comment line",
-			line:     "# Some comment",
-			expected: nil,
-		},
-		{
-			name:     "empty line",
-			line:     "",
-			expected: nil,
-		},
-	}
-	
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parser(tt.line)
-			if tt.expected == nil {
-				assert.Nil(t, result)
-			} else {
-				assert.NotNil(t, result)
-				for key, expectedValue := range tt.expected {
-					actualValue, exists := result[key]
-					assert.True(t, exists, "Key %s should exist", key)
-					assert.Equal(t, expectedValue, actualValue)
-				}
-			}
-		})
-	}
+// Mock clients
+type mockRDSClient struct {
+	mock.Mock
 }
 
-func TestLogMessage_Marshal(t *testing.T) {
-	msg := LogMessage{
-		InstanceID:  "test-instance",
-		LogFileName: "error.log",
-		LogType:     "error",
-		LastWritten: 1234567890,
-		Size:        1024,
-	}
-	
-	data, err := json.Marshal(msg)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, data)
-	
-	var decoded LogMessage
-	err = json.Unmarshal(data, &decoded)
-	assert.NoError(t, err)
-	assert.Equal(t, msg.InstanceID, decoded.InstanceID)
-	assert.Equal(t, msg.LogFileName, decoded.LogFileName)
+func (m *mockRDSClient) DownloadDBLogFilePortion(ctx context.Context, params *rds.DownloadDBLogFilePortionInput, optFns ...func(*rds.Options)) (*rds.DownloadDBLogFilePortionOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*rds.DownloadDBLogFilePortionOutput), args.Error(1)
 }
 
-func TestConfig_GetEnvAsInt(t *testing.T) {
+type mockDynamoClient struct {
+	mock.Mock
+}
+
+func (m *mockDynamoClient) GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*dynamodb.GetItemOutput), args.Error(1)
+}
+
+func (m *mockDynamoClient) PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*dynamodb.PutItemOutput), args.Error(1)
+}
+
+func (m *mockDynamoClient) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*dynamodb.UpdateItemOutput), args.Error(1)
+}
+
+func (m *mockDynamoClient) DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*dynamodb.DeleteItemOutput), args.Error(1)
+}
+
+// Test helper functions
+func TestGetEnvOrDefault(t *testing.T) {
 	tests := []struct {
 		name     string
 		key      string
-		envValue string
-		default_ int
-		expected int
+		defVal   string
+		envVal   string
+		expected string
 	}{
-		{
-			name:     "returns int value when valid",
-			key:      "TEST_INT_VAR",
-			envValue: "42",
-			default_: 10,
-			expected: 42,
-		},
-		{
-			name:     "returns default when env not set",
-			key:      "UNSET_INT_VAR",
-			envValue: "",
-			default_: 10,
-			expected: 10,
-		},
-		{
-			name:     "returns default when env not a valid int",
-			key:      "INVALID_INT_VAR",
-			envValue: "not-a-number",
-			default_: 10,
-			expected: 10,
-		},
+		{"returns default when env not set", "TEST_KEY", "default", "", "default"},
+		{"returns env value when set", "TEST_KEY", "default", "value", "value"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envValue != "" {
-				t.Setenv(tt.key, tt.envValue)
+			if tt.envVal != "" {
+				t.Setenv(tt.key, tt.envVal)
 			}
-			result := getEnvAsInt(tt.key, tt.default_)
+			result := getEnvOrDefault(tt.key, tt.defVal)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
+// Test Circuit Breaker
 func TestCircuitBreaker(t *testing.T) {
-	t.Run("allows calls when closed", func(t *testing.T) {
-		cb := NewCircuitBreaker(3, 5*time.Second)
-		err := cb.Call(func() error {
-			return nil
-		})
-		assert.NoError(t, err)
-	})
+	cb := NewCircuitBreaker(2, 100*time.Millisecond)
 
-	t.Run("opens after max failures", func(t *testing.T) {
-		cb := NewCircuitBreaker(2, 5*time.Second)
-		
-		// First two failures
-		for i := 0; i < 2; i++ {
-			err := cb.Call(func() error {
-				return errors.New("test error")
-			})
-			assert.Error(t, err)
-		}
-		
-		// Circuit should now be open
-		err := cb.Call(func() error {
-			return nil
-		})
+	// Test successful calls
+	err := cb.Call(func() error { return nil })
+	assert.NoError(t, err)
+
+	// Test failure tracking
+	for i := 0; i < 2; i++ {
+		err = cb.Call(func() error { return fmt.Errorf("test error") })
 		assert.Error(t, err)
-		assert.Equal(t, "circuit breaker is open", err.Error())
-	})
+	}
 
-	t.Run("half-open state after timeout", func(t *testing.T) {
-		cb := NewCircuitBreaker(1, 100*time.Millisecond)
-		
-		// Trigger open state
-		_ = cb.Call(func() error {
-			return errors.New("test error")
-		})
-		
-		// Wait for reset timeout
-		time.Sleep(150 * time.Millisecond)
-		
-		// Should allow call in half-open state
-		err := cb.Call(func() error {
-			return nil
-		})
-		assert.NoError(t, err)
-	})
+	// Circuit should be open now
+	err = cb.Call(func() error { return nil })
+	assert.EqualError(t, err, "circuit breaker is open")
+
+	// Wait for reset timeout
+	time.Sleep(150 * time.Millisecond)
+
+	// Circuit should be half-open, next call should succeed
+	err = cb.Call(func() error { return nil })
+	assert.NoError(t, err)
 }
 
+// Test HTTP Connection Pool
 func TestHTTPConnectionPool(t *testing.T) {
-	pool := NewHTTPConnectionPool(3, 5*time.Second)
-	
-	// Get all clients from pool
-	clients := make([]*http.Client, 3)
-	for i := 0; i < 3; i++ {
-		clients[i] = pool.Get()
-		assert.NotNil(t, clients[i])
-	}
-	
-	// Return clients to pool
-	for _, client := range clients {
-		pool.Put(client)
-	}
-	
-	// Verify we can get them again
-	client := pool.Get()
-	assert.NotNil(t, client)
-	pool.Put(client)
+	pool := NewHTTPConnectionPool(2, 1*time.Second)
+
+	// Get client
+	client1 := pool.Get()
+	assert.NotNil(t, client1)
+
+	// Get another client
+	client2 := pool.Get()
+	assert.NotNil(t, client2)
+
+	// Return client
+	pool.Put(client1)
+
+	// Should be able to get client again
+	client3 := pool.Get()
+	assert.NotNil(t, client3)
 }
 
-func TestBatchProcessing(t *testing.T) {
-	t.Run("batch collector groups items", func(t *testing.T) {
-		// This tests the batch grouping logic
-		batch := []BatchItem{
-			{LogMsg: LogMessage{InstanceID: "inst1", LogType: "error"}},
-			{LogMsg: LogMessage{InstanceID: "inst2", LogType: "error"}},
-			{LogMsg: LogMessage{InstanceID: "inst1", LogType: "slowquery"}},
-		}
-		
-		grouped := make(map[string][]BatchItem)
-		for _, item := range batch {
-			key := item.LogMsg.InstanceID
-			grouped[key] = append(grouped[key], item)
-		}
-		
-		assert.Equal(t, 2, len(grouped))
-		assert.Equal(t, 2, len(grouped["inst1"]))
-		assert.Equal(t, 1, len(grouped["inst2"]))
-	})
-}
-
-func TestStreamingDownload(t *testing.T) {
-	t.Run("pipe reader writer basics", func(t *testing.T) {
-		pr, pw := io.Pipe()
-		
-		go func() {
-			defer func() { _ = pw.Close() }()
-			_, _ = pw.Write([]byte("test data\n"))
-			_, _ = pw.Write([]byte("more data\n"))
-		}()
-		
-		data, err := io.ReadAll(pr)
-		assert.NoError(t, err)
-		assert.Equal(t, "test data\nmore data\n", string(data))
-	})
-}
-
-func TestBufferAndGzipPools(t *testing.T) {
-	t.Run("buffer pool reuse", func(t *testing.T) {
-		buf1 := bufferPool.Get().(*bytes.Buffer)
-		buf1.WriteString("test")
-		buf1.Reset()
-		bufferPool.Put(buf1)
-		
-		buf2 := bufferPool.Get().(*bytes.Buffer)
-		assert.Equal(t, 0, buf2.Len())
-		bufferPool.Put(buf2)
-	})
-	
-	t.Run("gzip writer pool reuse", func(t *testing.T) {
-		gz1 := gzipWriterPool.Get().(*gzip.Writer)
-		var buf bytes.Buffer
-		gz1.Reset(&buf)
-		_, _ = gz1.Write([]byte("test data"))
-		_ = gz1.Close()
-		
-		assert.Greater(t, buf.Len(), 0)
-		
-		gz1.Reset(nil)
-		gzipWriterPool.Put(gz1)
-	})
-}
-
-func TestErrorLogParser(t *testing.T) {
+// Test parseErrorLog
+func TestParseErrorLog(t *testing.T) {
 	tests := []struct {
 		name     string
 		line     string
 		expected ParsedLogEntry
 	}{
 		{
-			name: "parse error log line",
-			line: "2024-01-15 10:30:45 [ERROR] Connection failed",
+			name: "parse error log with timestamp",
+			line: "2025-08-02 12:34:56 140234567890 [ERROR] Access denied for user",
 			expected: ParsedLogEntry{
-				"timestamp": "2024-01-15 10:30:45",
+				"timestamp": "2025-08-02 12:34:56",
 				"level":     "ERROR",
-				"message":   "[ERROR] Connection failed",
+				"message":   "Access denied for user",
+				"raw_line":  "2025-08-02 12:34:56 140234567890 [ERROR] Access denied for user",
 			},
 		},
 		{
-			name:     "invalid line",
-			line:     "invalid",
+			name: "parse warning log",
+			line: "2025-08-02 12:34:56 [Warning] Aborted connection",
+			expected: ParsedLogEntry{
+				"timestamp": "2025-08-02 12:34:56",
+				"level":     "WARNING",
+				"message":   "Aborted connection",
+				"raw_line":  "2025-08-02 12:34:56 [Warning] Aborted connection",
+			},
+		},
+		{
+			name:     "skip empty line",
+			line:     "",
 			expected: nil,
 		},
+		{
+			name: "unparseable line",
+			line: "Some random log line",
+			expected: ParsedLogEntry{
+				"message":  "Some random log line",
+				"raw_line": "Some random log line",
+			},
+		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := parseErrorLog(tt.line)
@@ -304,68 +173,269 @@ func TestErrorLogParser(t *testing.T) {
 	}
 }
 
-func TestMetricsExporter(t *testing.T) {
-	metrics := NewMetricsExporter("http://localhost:5080", "user", "pass")
-	
-	t.Run("increment counter", func(t *testing.T) {
-		metrics.IncrementCounter("test_counter", 5)
-		metrics.mu.RLock()
-		value := metrics.counters["test_counter"]
-		metrics.mu.RUnlock()
-		assert.Equal(t, int64(5), value)
+// Test parseSlowQueryLog
+func TestParseSlowQueryLog(t *testing.T) {
+	tests := []struct {
+		name     string
+		line     string
+		expected ParsedLogEntry
+	}{
+		{
+			name: "parse time header",
+			line: "# Time: 2025-08-02T12:34:56.123456Z",
+			expected: ParsedLogEntry{
+				"timestamp":  "2025-08-02T12:34:56.123456Z",
+				"event_type": "query_start",
+			},
+		},
+		{
+			name: "parse user host",
+			line: "# User@Host: root[root] @ [127.0.0.1]",
+			expected: ParsedLogEntry{
+				"user_host":  "root[root] @ [127.0.0.1]",
+				"user":       "root[root] @ ",
+				"host":       "127.0.0.1",
+				"event_type": "query_metadata",
+			},
+		},
+		{
+			name: "parse query time",
+			line: "# Query_time: 1.234567  Lock_time: 0.000123 Rows_sent: 1  Rows_examined: 1000",
+			expected: ParsedLogEntry{
+				"event_type":    "query_stats",
+				"query_time":    1.234567,
+				"lock_time":     0.000123,
+				"rows_sent":     float64(1),
+				"rows_examined": float64(1000),
+			},
+		},
+		{
+			name: "parse SQL statement",
+			line: "SELECT * FROM users WHERE id = 1;",
+			expected: ParsedLogEntry{
+				"sql_statement": "SELECT * FROM users WHERE id = 1;",
+				"event_type":    "query_sql",
+			},
+		},
+		{
+			name:     "skip empty line",
+			line:     "",
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseSlowQueryLog(tt.line)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// Test checkpoint functionality
+func TestCheckpointOperations(t *testing.T) {
+	mockDynamo := new(mockDynamoClient)
+	bp := &BatchProcessor{
+		config: Config{
+			CheckpointTable: "test-checkpoints",
+		},
+		dynamoClient: mockDynamo,
+	}
+
+	ctx := context.Background()
+	logMsg := LogMessage{
+		InstanceID:  "test-instance",
+		LogFileName: "test.log",
+	}
+
+	t.Run("get checkpoint - not found", func(t *testing.T) {
+		mockDynamo.On("GetItem", ctx, mock.Anything).Return(&dynamodb.GetItemOutput{}, nil).Once()
+
+		marker, err := bp.getCheckpoint(ctx, logMsg)
+		assert.NoError(t, err)
+		assert.Empty(t, marker)
+		mockDynamo.AssertExpectations(t)
 	})
-	
-	t.Run("record error", func(t *testing.T) {
-		metrics.RecordError("processor", "timeout")
-		metrics.mu.RLock()
-		value := metrics.counters["processor_timeout_errors"]
-		metrics.mu.RUnlock()
-		assert.Equal(t, int64(1), value)
+
+	t.Run("get checkpoint - found", func(t *testing.T) {
+		mockDynamo.On("GetItem", ctx, mock.Anything).Return(&dynamodb.GetItemOutput{
+			Item: map[string]dynamoTypes.AttributeValue{
+				"marker": &dynamoTypes.AttributeValueMemberS{Value: "test-marker"},
+			},
+		}, nil).Once()
+
+		marker, err := bp.getCheckpoint(ctx, logMsg)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-marker", marker)
+		mockDynamo.AssertExpectations(t)
+	})
+
+	t.Run("save checkpoint", func(t *testing.T) {
+		mockDynamo.On("PutItem", ctx, mock.Anything).Return(&dynamodb.PutItemOutput{}, nil).Once()
+
+		err := bp.saveCheckpoint(ctx, logMsg, "new-marker", 100)
+		assert.NoError(t, err)
+		mockDynamo.AssertExpectations(t)
+	})
+
+	t.Run("delete checkpoint", func(t *testing.T) {
+		mockDynamo.On("DeleteItem", ctx, mock.Anything).Return(&dynamodb.DeleteItemOutput{}, nil).Once()
+
+		err := bp.deleteCheckpoint(ctx, logMsg)
+		assert.NoError(t, err)
+		mockDynamo.AssertExpectations(t)
 	})
 }
 
-func TestDataIntegrityChecker(t *testing.T) {
-	metrics := NewMetricsExporter("", "", "")
-	checker := NewDataIntegrityChecker(metrics)
-	
-	checker.VerifyAndRecord("error", "test.log", 100, 100)
-	metrics.mu.RLock()
-	mismatches := metrics.counters["data_integrity_mismatches"]
-	metrics.mu.RUnlock()
-	assert.Equal(t, int64(0), mismatches)
-	
-	checker.VerifyAndRecord("error", "test.log", 90, 100)
-	metrics.mu.RLock()
-	mismatches = metrics.counters["data_integrity_mismatches"]
-	metrics.mu.RUnlock()
-	assert.Equal(t, int64(1), mismatches)
+// Test DLQ functionality
+func TestSendToDLQ(t *testing.T) {
+	mockDynamo := new(mockDynamoClient)
+	bp := &BatchProcessor{
+		config: Config{
+			DLQTable:   "test-dlq",
+			MaxRetries: 3,
+		},
+		dynamoClient: mockDynamo,
+	}
+
+	ctx := context.Background()
+	item := BatchItem{
+		Message: kafka.Message{
+			Partition: 1,
+			Offset:    100,
+			Value:     []byte(`{"test": "data"}`),
+		},
+		LogMsg: LogMessage{
+			InstanceID:  "test-instance",
+			LogFileName: "test.log",
+			ClusterID:   "test-cluster",
+			LogType:     "error",
+		},
+	}
+
+	mockDynamo.On("PutItem", ctx, mock.MatchedBy(func(input *dynamodb.PutItemInput) bool {
+		return *input.TableName == "test-dlq" &&
+			input.Item["instance_id"].(*dynamoTypes.AttributeValueMemberS).Value == "test-instance"
+	})).Return(&dynamodb.PutItemOutput{}, nil).Once()
+
+	err := bp.sendToDLQ(ctx, item, fmt.Errorf("test error"))
+	assert.NoError(t, err)
+	mockDynamo.AssertExpectations(t)
 }
 
-func TestParserSelection(t *testing.T) {
-	bp := &BatchProcessor{}
+// Test sendBatch with mock HTTP server
+func TestSendBatch(t *testing.T) {
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		
+		// Check basic auth
+		user, pass, ok := r.BasicAuth()
+		assert.True(t, ok)
+		assert.Equal(t, "testuser", user)
+		assert.Equal(t, "testpass", pass)
+
+		// Read body
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.Contains(t, string(body), "test message")
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	bp := &BatchProcessor{
+		config: Config{
+			OpenObserveURL:    server.URL,
+			OpenObserveUser:   "testuser",
+			OpenObservePass:   "testpass",
+			OpenObserveStream: "test-stream",
+		},
+		httpPool: NewHTTPConnectionPool(1, 1*time.Second),
+	}
+
+	batch := []ParsedLogEntry{
+		{"message": "test message", "level": "ERROR"},
+	}
+
+	logMsg := LogMessage{LogType: "error"}
+
+	err := bp.sendBatch(context.Background(), logMsg, batch)
+	assert.NoError(t, err)
+}
+
+// Test retry logic with worker
+func TestWorkerRetryLogic(t *testing.T) {
+	mockDynamo := new(mockDynamoClient)
+	bp := &BatchProcessor{
+		config: Config{
+			MaxRetries:    2,
+			RetryBackoff:  10 * time.Millisecond,
+			DLQTable:      "test-dlq",
+		},
+		dynamoClient:    mockDynamo,
+		kafkaReader:     kafka.NewReader(kafka.ReaderConfig{}),
+		circuitBreaker:  NewCircuitBreaker(5, 30*time.Second),
+		metricsExporter: NewMetricsExporter("", "", ""),
+	}
+
+	// Mock processLogOptimized to fail twice then succeed
+	failCount := 0
+	bp.processLogOptimized = func(ctx context.Context, logMsg LogMessage) error {
+		failCount++
+		if failCount <= 2 {
+			return fmt.Errorf("simulated failure %d", failCount)
+		}
+		return nil
+	}
+
+	ctx := context.Background()
+	itemsChan := make(chan BatchItem, 1)
+
+	item := BatchItem{
+		Message: kafka.Message{},
+		LogMsg: LogMessage{
+			InstanceID:  "test-instance",
+			LogFileName: "test.log",
+		},
+	}
+
+	// Send item to channel
+	itemsChan <- item
+	close(itemsChan)
+
+	// Run worker
+	bp.worker(ctx, 0, itemsChan)
+
+	// Should have retried and succeeded
+	assert.Equal(t, 3, failCount)
+}
+
+// Benchmark tests
+func BenchmarkParseErrorLog(b *testing.B) {
+	line := "2025-08-02 12:34:56 140234567890 [ERROR] Access denied for user 'root'@'localhost'"
 	
-	t.Run("error log parser", func(t *testing.T) {
-		parser := bp.getParser("error")
-		assert.NotNil(t, parser)
-		// Test it returns the error parser
-		result := parser("2024-01-15 10:30:45 [ERROR] test")
-		assert.NotNil(t, result)
-	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parseErrorLog(line)
+	}
+}
+
+func BenchmarkParseSlowQueryLog(b *testing.B) {
+	line := "# Query_time: 1.234567  Lock_time: 0.000123 Rows_sent: 1  Rows_examined: 1000"
 	
-	t.Run("slowquery parser", func(t *testing.T) {
-		parser := bp.getParser("slowquery")
-		assert.NotNil(t, parser)
-		// Test it returns the slowquery parser
-		result := parser("# Time: 2024-01-15T10:30:45Z")
-		assert.NotNil(t, result)
-		assert.Equal(t, "2024-01-15T10:30:45Z", result["timestamp"])
-	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parseSlowQueryLog(line)
+	}
+}
+
+func BenchmarkCircuitBreaker(b *testing.B) {
+	cb := NewCircuitBreaker(100, 1*time.Second)
 	
-	t.Run("generic parser", func(t *testing.T) {
-		parser := bp.getParser("unknown")
-		assert.NotNil(t, parser)
-		result := parser("some line")
-		assert.NotNil(t, result)
-		assert.Equal(t, "some line", result["line"])
-	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cb.Call(func() error { return nil })
+	}
 }

@@ -4,6 +4,8 @@ variable "table_names" {
     instance_metadata = string
     tracking         = string
     jobs            = string
+    checkpoints      = string
+    dlq             = string
   })
 }
 
