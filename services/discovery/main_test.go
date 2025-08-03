@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	rdsTypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/redis/go-redis/v9"
-	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -53,6 +52,11 @@ func (m *mockDynamoClient) PutItem(ctx context.Context, params *dynamodb.PutItem
 func (m *mockDynamoClient) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	args := m.Called(ctx, params)
 	return args.Get(0).(*dynamodb.UpdateItemOutput), args.Error(1)
+}
+
+func (m *mockDynamoClient) Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	args := m.Called(ctx, params)
+	return args.Get(0).(*dynamodb.QueryOutput), args.Error(1)
 }
 
 // Test helper functions

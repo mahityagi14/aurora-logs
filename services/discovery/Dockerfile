@@ -6,9 +6,7 @@ RUN apk add --no-cache git ca-certificates
 WORKDIR /app
 
 # Copy discovery module files
-COPY discovery/go.mod discovery/*.go discovery/
-
-WORKDIR /app/discovery
+COPY go.mod *.go ./
 
 # Download dependencies and tidy
 RUN go mod tidy
@@ -28,7 +26,7 @@ RUN apk --no-cache add ca-certificates tzdata
 RUN adduser -D -u 1000 appuser
 
 WORKDIR /app
-COPY --from=builder /app/discovery/discovery .
+COPY --from=builder /app/discovery .
 RUN chown -R appuser:appuser /app
 
 USER appuser

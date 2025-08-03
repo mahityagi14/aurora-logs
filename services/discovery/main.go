@@ -53,12 +53,27 @@ func getEnvAsInt(key string, defaultVal int) int {
 // RDS Cache Client - Caches RDS API responses in Redis
 // ============================================================================
 
+// RDSClientInterface defines the interface for RDS operations
+type RDSClientInterface interface {
+	DescribeDBClusters(ctx context.Context, params *rds.DescribeDBClustersInput, optFns ...func(*rds.Options)) (*rds.DescribeDBClustersOutput, error)
+	DescribeDBInstances(ctx context.Context, params *rds.DescribeDBInstancesInput, optFns ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error)
+	DescribeDBLogFiles(ctx context.Context, params *rds.DescribeDBLogFilesInput, optFns ...func(*rds.Options)) (*rds.DescribeDBLogFilesOutput, error)
+}
+
+// DynamoDBClientInterface defines the interface for DynamoDB operations
+type DynamoDBClientInterface interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+}
+
 type RDSCacheClient struct {
-	rdsClient   *rds.Client
+	rdsClient   RDSClientInterface
 	redisClient *redis.Client
 }
 
-func NewRDSCacheClient(rdsClient *rds.Client, redisClient *redis.Client) *RDSCacheClient {
+func NewRDSCacheClient(rdsClient RDSClientInterface, redisClient *redis.Client) *RDSCacheClient {
 	return &RDSCacheClient{
 		rdsClient:   rdsClient,
 		redisClient: redisClient,
@@ -341,7 +356,7 @@ type Discovery struct {
 	config           Config
 	rdsClient        *rds.Client
 	rdsCacheClient   *RDSCacheClient
-	dynamoClient     *dynamodb.Client
+	dynamoClient     DynamoDBClientInterface
 	kafkaWriter      *kafka.Writer
 	redisClient      *redis.Client
 	limiter          *rate.Limiter

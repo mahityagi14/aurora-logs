@@ -216,6 +216,15 @@ type Config struct {
 	BatchSize        int
 	BatchTimeout     time.Duration
 	Region           string
+	// Added fields for checkpoint/resume and retry logic
+	CheckpointTable      string
+	DLQTable             string
+	MaxRetries           int
+	RetryBackoff         time.Duration
+	CircuitBreakerMax    int
+	CircuitBreakerTimeout time.Duration
+	ConnectionPoolSize   int
+	ConnectionTimeout    time.Duration
 }
 
 type LogMessage struct {
@@ -231,11 +240,19 @@ type LogMessage struct {
 
 type ParsedLogEntry map[string]interface{}
 
+// DynamoDBClientInterface defines the interface for DynamoDB operations
+type DynamoDBClientInterface interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
+}
+
 // Batch Processor with optimizations
 type BatchProcessor struct {
 	config           Config
 	rdsClient        *rds.Client
-	dynamoClient     *dynamodb.Client
+	dynamoClient     DynamoDBClientInterface
 	kafkaReader      *kafka.Reader
 	httpPool         *HTTPConnectionPool
 	metricsExporter  *MetricsExporter
@@ -274,6 +291,15 @@ func main() {
 		BatchSize:        getEnvAsInt("BATCH_SIZE", 100),
 		BatchTimeout:     time.Duration(getEnvAsInt("BATCH_TIMEOUT_SEC", 5)) * time.Second,
 		Region:           os.Getenv("AWS_REGION"),
+		// Checkpoint and retry configuration
+		CheckpointTable:      getEnvOrDefault("CHECKPOINT_TABLE", "aurora-log-checkpoints"),
+		DLQTable:             getEnvOrDefault("DLQ_TABLE", "aurora-log-dlq"),
+		MaxRetries:           getEnvAsInt("MAX_RETRIES", 3),
+		RetryBackoff:         time.Duration(getEnvAsInt("RETRY_BACKOFF_SEC", 5)) * time.Second,
+		CircuitBreakerMax:    getEnvAsInt("CIRCUIT_BREAKER_MAX_FAILURES", 5),
+		CircuitBreakerTimeout: time.Duration(getEnvAsInt("CIRCUIT_BREAKER_TIMEOUT_SEC", 30)) * time.Second,
+		ConnectionPoolSize:   getEnvAsInt("CONNECTION_POOL_SIZE", 100),
+		ConnectionTimeout:    time.Duration(getEnvAsInt("CONNECTION_TIMEOUT_SEC", 30)) * time.Second,
 	}
 
 	// Configure AWS SDK with IMDSv2 support
@@ -671,7 +697,7 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 // Custom reader that tracks markers
 type markerTrackingReader struct {
 	*io.PipeReader
-	markerChan chan<- string
+	markerChan chan string
 }
 
 func (r *markerTrackingReader) SendMarker(marker string) {
@@ -685,12 +711,11 @@ func (r *markerTrackingReader) SendMarker(marker string) {
 // Streaming download implementation with marker tracking
 func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMessage, startMarker string) (io.ReadCloser, error) {
 	pr, pw := io.Pipe()
-	markerChan := make(chan string, 100)
 	
 	// Create custom reader that exposes marker channel
 	mtr := &markerTrackingReader{
 		PipeReader: pr,
-		markerChan: markerChan,
+		markerChan: make(chan string, 100),
 	}
 	
 	go func() {
@@ -698,7 +723,7 @@ func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMe
 			if err := pw.Close(); err != nil {
 				slog.Error("Failed to close pipe writer", "error", err)
 			}
-			close(markerChan)
+			close(mtr.markerChan)
 		}()
 		
 		marker := startMarker
@@ -738,7 +763,7 @@ func (bp *BatchProcessor) downloadLogStreaming(ctx context.Context, logMsg LogMe
 				marker = *output.Marker
 				// Send marker for checkpoint tracking
 				select {
-				case markerChan <- marker:
+				case mtr.markerChan <- marker:
 				default:
 					// Channel full, skip
 				}

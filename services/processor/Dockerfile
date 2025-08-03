@@ -6,9 +6,7 @@ RUN apk add --no-cache git ca-certificates
 WORKDIR /app
 
 # Copy processor module files
-COPY processor/go.mod processor/*.go processor/
-
-WORKDIR /app/processor
+COPY go.mod *.go ./
 
 # Download dependencies and tidy
 RUN go mod tidy
@@ -28,7 +26,7 @@ RUN apk --no-cache add ca-certificates tzdata
 RUN adduser -D -u 1000 appuser
 
 WORKDIR /app
-COPY --from=builder /app/processor/processor .
+COPY --from=builder /app/processor .
 RUN chown -R appuser:appuser /app
 
 USER appuser
