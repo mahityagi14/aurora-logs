@@ -761,12 +761,16 @@ func (d *Discovery) publishLogInfo(ctx context.Context, logInfo LogFileInfo) err
 }
 
 func (d *Discovery) saveClusterDetails(ctx context.Context, cluster rdsTypes.DBCluster) error {
+	// Create a pseudo instance_id for the cluster record
+	clusterID := aws.ToString(cluster.DBClusterIdentifier)
 	item := map[string]dynamoTypes.AttributeValue{
-		"cluster_id": &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.DBClusterIdentifier)},
-		"engine":     &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Engine)},
-		"status":     &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Status)},
-		"endpoint":   &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Endpoint)},
-		"updated_at": &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
+		"instance_id": &dynamoTypes.AttributeValueMemberS{Value: clusterID + "-cluster"}, // Required primary key
+		"cluster_id":  &dynamoTypes.AttributeValueMemberS{Value: clusterID},
+		"engine":      &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Engine)},
+		"status":      &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Status)},
+		"endpoint":    &dynamoTypes.AttributeValueMemberS{Value: aws.ToString(cluster.Endpoint)},
+		"is_cluster":  &dynamoTypes.AttributeValueMemberBOOL{Value: true},
+		"updated_at":  &dynamoTypes.AttributeValueMemberN{Value: strconv.FormatInt(time.Now().Unix(), 10)},
 	}
 
 	_, err := d.dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{

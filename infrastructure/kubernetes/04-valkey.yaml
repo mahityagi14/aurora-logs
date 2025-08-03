@@ -30,7 +30,7 @@ spec:
         app: valkey
     spec:
       nodeSelector:
-        kubernetes.io/hostname: ip-172-16-30-239.ec2.internal  # aurora-node-1
+        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
       containers:
       - name: valkey
         image: valkey/valkey:8.1.3
