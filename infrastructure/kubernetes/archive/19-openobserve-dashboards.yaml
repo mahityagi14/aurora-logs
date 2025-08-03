@@ -1,0 +1,234 @@
+---
+# ConfigMap for OpenObserve Dashboard configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openobserve-dashboards
+  namespace: aurora-logs
+data:
+  k8s-logs-dashboard.json: |
+    {
+      "version": 1,
+      "title": "Kubernetes Logs Dashboard",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Pod Logs by Namespace",
+          "type": "logs",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+          "query": {
+            "query": "SELECT * FROM k8s-logs WHERE kubernetes_namespace_name = 'aurora-logs' ORDER BY _timestamp DESC",
+            "limit": 1000
+          }
+        },
+        {
+          "id": 2,
+          "title": "Error Rate by Service",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT kubernetes_labels_app as service, COUNT(*) as error_count FROM k8s-logs WHERE log LIKE '%ERROR%' GROUP BY service ORDER BY error_count DESC",
+            "interval": "5m"
+          }
+        },
+        {
+          "id": 3,
+          "title": "Pod Restarts",
+          "type": "table",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT kubernetes_pod_name, COUNT(*) as restart_count FROM k8s-logs WHERE log LIKE '%Back-off restarting failed container%' GROUP BY kubernetes_pod_name ORDER BY restart_count DESC"
+          }
+        },
+        {
+          "id": 4,
+          "title": "Resource Usage Trends",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT _timestamp, kubernetes_pod_name, MAX(CAST(REGEXP_EXTRACT(log, 'cpu:(\\d+)m') AS FLOAT)) as cpu_usage FROM k8s-logs WHERE log LIKE '%resource usage%' GROUP BY _timestamp, kubernetes_pod_name",
+            "interval": "1m"
+          }
+        },
+        {
+          "id": 5,
+          "title": "Scaling Events",
+          "type": "logs",
+          "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT * FROM k8s-logs WHERE log LIKE '%scaled%' OR log LIKE '%HorizontalPodAutoscaler%' ORDER BY _timestamp DESC LIMIT 100"
+          }
+        }
+      ]
+    }
+
+  aurora-logs-dashboard.json: |
+    {
+      "version": 1,
+      "title": "Aurora Logs Processing Dashboard",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Log Processing Rate",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT COUNT(*) as logs_processed FROM aurora-logs WHERE _timestamp > now() - 1h GROUP BY time(1m)",
+            "interval": "1m"
+          }
+        },
+        {
+          "id": 2,
+          "title": "Processing Latency",
+          "type": "graph",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT AVG(processing_time_ms) as avg_latency, MAX(processing_time_ms) as max_latency FROM aurora-logs WHERE _timestamp > now() - 1h GROUP BY time(1m)",
+            "interval": "1m"
+          }
+        },
+        {
+          "id": 3,
+          "title": "Error Logs by Database",
+          "type": "table",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT db_instance, COUNT(*) as error_count FROM aurora-logs WHERE log_type = 'error' AND _timestamp > now() - 24h GROUP BY db_instance ORDER BY error_count DESC"
+          }
+        },
+        {
+          "id": 4,
+          "title": "Slow Queries",
+          "type": "table",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT db_instance, query_time, query FROM aurora-logs WHERE log_type = 'slowquery' AND query_time > 1.0 ORDER BY query_time DESC LIMIT 20"
+          }
+        },
+        {
+          "id": 5,
+          "title": "Kafka Consumer Lag",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 16, "w": 24, "h": 8},
+          "query": {
+            "query": "SELECT consumer_group, SUM(lag) as total_lag FROM k8s-logs WHERE kubernetes_labels_app = 'processor' AND log LIKE '%consumer lag%' GROUP BY consumer_group, time(30s)",
+            "interval": "30s"
+          }
+        }
+      ]
+    }
+
+  cost-optimization-dashboard.json: |
+    {
+      "version": 1,
+      "title": "Cost Optimization Dashboard",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Active Pods by Type",
+          "type": "graph",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT kubernetes_labels_role as role, COUNT(DISTINCT kubernetes_pod_name) as pod_count FROM k8s-logs WHERE _timestamp > now() - 5m GROUP BY role, time(1m)",
+            "interval": "1m"
+          }
+        },
+        {
+          "id": 2,
+          "title": "Fargate vs EC2 Pods",
+          "type": "piechart",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT kubernetes_annotations_eks_amazonaws_com_compute_type as compute_type, COUNT(DISTINCT kubernetes_pod_name) as count FROM k8s-logs WHERE _timestamp > now() - 5m GROUP BY compute_type"
+          }
+        },
+        {
+          "id": 3,
+          "title": "Scale to Zero Events",
+          "type": "table",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+          "query": {
+            "query": "SELECT _timestamp, kubernetes_labels_app as app, log FROM k8s-logs WHERE log LIKE '%scaled to 0%' OR log LIKE '%Scaling down%' ORDER BY _timestamp DESC LIMIT 50"
+          }
+        },
+        {
+          "id": 4,
+          "title": "Resource Utilization",
+          "type": "heatmap",
+          "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT kubernetes_pod_name, AVG(cpu_percent) as cpu_usage FROM k8s-logs WHERE kubernetes_labels_app = 'processor' GROUP BY kubernetes_pod_name, time(5m)",
+            "interval": "5m"
+          }
+        },
+        {
+          "id": 5,
+          "title": "Estimated Hourly Cost",
+          "type": "stat",
+          "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+          "query": {
+            "query": "SELECT SUM(CASE WHEN kubernetes_labels_role = 'master' THEN 0.01 WHEN kubernetes_labels_role = 'slave' THEN 0.0026 ELSE 0.005 END) as hourly_cost FROM (SELECT DISTINCT kubernetes_pod_name, kubernetes_labels_role FROM k8s-logs WHERE _timestamp > now() - 5m)"
+          }
+        }
+      ]
+    }
+
+---
+# Job to import dashboards into OpenObserve
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: import-dashboards
+  namespace: aurora-logs
+spec:
+  template:
+    spec:
+      serviceAccountName: default
+      restartPolicy: OnFailure
+      containers:
+      - name: dashboard-importer
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          OPENOBSERVE_URL="http://openobserve-service:5080"
+          AUTH="admin@example.com:Complexpass#123"
+          
+          echo "Waiting for OpenObserve to be ready..."
+          until curl -s -f -u "$AUTH" "$OPENOBSERVE_URL/api" > /dev/null; do
+            echo "OpenObserve not ready, waiting..."
+            sleep 10
+          done
+          
+          echo "Creating K8s logs stream..."
+          curl -X POST "$OPENOBSERVE_URL/api/default/k8s-logs/_create" \
+            -u "$AUTH" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "k8s-logs",
+              "storage_type": "s3",
+              "retention": 7,
+              "partition_keys": ["kubernetes_namespace_name", "kubernetes_labels_app"],
+              "full_text_search_keys": ["log", "message"],
+              "index_prefix": "k8s-logs-"
+            }'
+          
+          echo "Importing dashboards..."
+          for dashboard in /dashboards/*.json; do
+            echo "Importing $dashboard..."
+            curl -X POST "$OPENOBSERVE_URL/api/default/dashboards" \
+              -u "$AUTH" \
+              -H "Content-Type: application/json" \
+              -d "@$dashboard"
+          done
+          
+          echo "Dashboard import complete!"
+        volumeMounts:
+        - name: dashboards
+          mountPath: /dashboards
+      volumes:
+      - name: dashboards
+        configMap:
+          name: openobserve-dashboards

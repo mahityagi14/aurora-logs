@@ -1,0 +1,128 @@
+---
+# Combined policies file: Pod Disruption Budgets and Resource Quotas
+# This ensures availability during updates and prevents resource overconsumption
+
+# ============ Pod Disruption Budgets ============
+
+# PodDisruptionBudget for Discovery Service
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: discovery-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: discovery
+---
+# PodDisruptionBudget for Processor Master
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: processor-master-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: processor
+      role: master
+---
+# PodDisruptionBudget for Kafka
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: kafka
+---
+# PodDisruptionBudget for OpenObserve
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openobserve-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: openobserve
+---
+# PodDisruptionBudget for Valkey
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: valkey-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: valkey
+
+---
+# ============ Resource Management ============
+
+# Resource Quota for aurora-logs namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: aurora-logs-quota
+  namespace: aurora-logs
+spec:
+  hard:
+    # CPU limits
+    requests.cpu: "3"           # Total 3 CPU cores for all pods
+    limits.cpu: "6"             # Total 6 CPU cores burst capacity
+    
+    # Memory limits
+    requests.memory: "6Gi"      # Total 6GB memory requested
+    limits.memory: "12Gi"       # Total 12GB memory limit
+    
+    # Storage limits
+    requests.storage: "25Gi"    # Total 25GB storage
+    persistentvolumeclaims: "5" # Max 5 PVCs
+    
+    # Pod limits
+    pods: "20"                  # Maximum 20 pods in namespace
+    
+    # Service limits
+    services: "10"              # Maximum 10 services
+    services.loadbalancers: "1" # Maximum 1 LoadBalancer service
+    services.nodeports: "0"     # No NodePort services allowed
+
+---
+# LimitRange for default pod resources
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: aurora-logs-limitrange
+  namespace: aurora-logs
+spec:
+  limits:
+  # Default limits for containers
+  - default:
+      cpu: "200m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "50m"
+      memory: "128Mi"
+    min:
+      cpu: "10m"
+      memory: "64Mi"
+    max:
+      cpu: "2000m"
+      memory: "8Gi"
+    type: Container
+  
+  # Limits for PVCs
+  - min:
+      storage: "1Gi"
+    max:
+      storage: "20Gi"
+    type: PersistentVolumeClaim

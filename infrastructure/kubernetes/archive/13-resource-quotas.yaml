@@ -1,0 +1,61 @@
+---
+# Resource Quota for aurora-logs namespace
+# Prevents resource overconsumption and controls costs
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: aurora-logs-quota
+  namespace: aurora-logs
+spec:
+  hard:
+    # CPU limits
+    requests.cpu: "3"           # Total 3 CPU cores for all pods
+    limits.cpu: "6"             # Total 6 CPU cores burst capacity
+    
+    # Memory limits
+    requests.memory: "6Gi"      # Total 6GB memory requested
+    limits.memory: "12Gi"       # Total 12GB memory limit
+    
+    # Storage limits
+    requests.storage: "25Gi"    # Total 25GB storage
+    persistentvolumeclaims: "5" # Max 5 PVCs
+    
+    # Pod limits
+    pods: "20"                  # Maximum 20 pods in namespace
+    
+    # Service limits
+    services: "10"              # Maximum 10 services
+    services.loadbalancers: "1" # Maximum 1 LoadBalancer service
+    services.nodeports: "0"     # No NodePort services allowed
+
+---
+# LimitRange for default pod resources
+# Ensures pods have resource constraints even if not specified
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: aurora-logs-limitrange
+  namespace: aurora-logs
+spec:
+  limits:
+  # Default limits for containers
+  - default:
+      cpu: "200m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "50m"
+      memory: "128Mi"
+    min:
+      cpu: "10m"
+      memory: "64Mi"
+    max:
+      cpu: "2000m"
+      memory: "8Gi"
+    type: Container
+  
+  # Limits for PVCs
+  - min:
+      storage: "1Gi"
+    max:
+      storage: "20Gi"
+    type: PersistentVolumeClaim

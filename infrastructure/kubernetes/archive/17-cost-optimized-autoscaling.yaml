@@ -1,0 +1,183 @@
+---
+# HPA for Processor Slaves - Aggressive scaling with scale to zero
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: processor-slaves-hpa
+  namespace: aurora-logs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: processor-slaves
+  minReplicas: 0   # Scale to zero when idle
+  maxReplicas: 10  # Maximum slaves
+  metrics:
+  # Scale based on Kafka consumer lag
+  - type: External
+    external:
+      metric:
+        name: kafka_consumer_lag_sum
+        selector:
+          matchLabels:
+            topic: aurora-logs
+            consumer_group: processor-slaves
+      target:
+        type: Value
+        value: "1000"  # Scale up if lag > 1000 messages
+  # Scale based on CPU
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60  # Lower threshold for faster scaling
+  # Scale based on memory
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Aggressive scale down for cost savings
+      stabilizationWindowSeconds: 30  # Very short window
+      policies:
+      - type: Percent
+        value: 100    # Can remove all pods (scale to 0)
+        periodSeconds: 30
+      - type: Pods
+        value: 5      # Can remove up to 5 pods at once
+        periodSeconds: 30
+      selectPolicy: Max  # Use most aggressive policy
+    scaleUp:
+      # Fast scale up for responsiveness
+      stabilizationWindowSeconds: 0   # No stabilization
+      policies:
+      - type: Percent
+        value: 200    # Can double pods
+        periodSeconds: 30
+      - type: Pods
+        value: 4      # Can add up to 4 pods at once
+        periodSeconds: 30
+      selectPolicy: Max
+---
+# KEDA ScaledObject for more sophisticated scaling (if KEDA is installed)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: processor-slaves-keda
+  namespace: aurora-logs
+spec:
+  scaleTargetRef:
+    name: processor-slaves
+  minReplicaCount: 0    # Scale to zero
+  maxReplicaCount: 10
+  pollingInterval: 10   # Check every 10 seconds
+  cooldownPeriod: 30    # Scale down after 30 seconds
+  triggers:
+  # Kafka lag trigger
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka-service.aurora-logs.svc.cluster.local:9092
+      consumerGroup: processor-slaves
+      topic: aurora-logs
+      lagThreshold: "100"  # Very sensitive to lag
+      offsetResetPolicy: earliest
+  # Prometheus metrics trigger
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus:9090
+      metricName: kafka_consumer_lag_sum
+      threshold: '500'
+      query: |
+        sum(kafka_consumer_lag_sum{topic="aurora-logs",consumer_group="processor-slaves"})
+---
+# HPA for Discovery Service - Conservative scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: discovery-hpa-optimized
+  namespace: aurora-logs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: discovery-optimized
+  minReplicas: 1   # Always keep 1 running
+  maxReplicas: 2   # Max 2 (discovery is lightweight)
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80  # Only scale at high load
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # 10 minutes
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 180  # 3 minutes
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 180
+---
+# VerticalPodAutoscaler for right-sizing (if VPA is installed)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: processor-slaves-vpa
+  namespace: aurora-logs
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: processor-slaves
+  updatePolicy:
+    updateMode: "Auto"  # Automatically update pod resources
+  resourcePolicy:
+    containerPolicies:
+    - containerName: processor
+      minAllowed:
+        cpu: 20m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 500m
+        memory: 1Gi
+      controlledResources: ["cpu", "memory"]
+    - containerName: fluent-bit
+      minAllowed:
+        cpu: 10m
+        memory: 32Mi
+      maxAllowed:
+        cpu: 100m
+        memory: 128Mi
+---
+# VPA for other services
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: services-vpa
+  namespace: aurora-logs
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: "{{ .ServiceName }}"  # Apply to each service
+  updatePolicy:
+    updateMode: "Recreate"  # Recreate pods with new resources
+  resourcePolicy:
+    containerPolicies:
+    - containerName: '*'
+      minAllowed:
+        cpu: 10m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 2Gi

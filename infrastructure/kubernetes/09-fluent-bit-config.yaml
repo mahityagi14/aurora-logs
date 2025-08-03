@@ -1,0 +1,260 @@
+---
+# Fluent Bit Main Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: aurora-logs
+  labels:
+    app: fluent-bit
+    component: log-parser
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon              Off
+        Flush               1
+        Log_Level           info
+        Parsers_File        parsers.conf
+        Parsers_File        custom_parsers.conf
+        HTTP_Server         On
+        HTTP_Listen         0.0.0.0
+        HTTP_Port           2020
+        Health_Check        On
+        storage.path        /var/log/flb-storage/
+        storage.sync        normal
+        storage.checksum    off
+        storage.max_chunks_up  128
+        storage.backlog.mem_limit  5M
+
+    [INPUT]
+        Name              forward
+        Listen            0.0.0.0
+        Port              24224
+        Buffer_Chunk_Size 1M
+        Buffer_Max_Size   5M
+        Tag_Prefix        aurora.
+        # Use the timestamp from the forward protocol
+        Time_Key          timestamp
+        Time_Format       %s
+
+    # Add metadata
+    [FILTER]
+        Name              record_modifier
+        Match             aurora.*
+        Record            processed_by fluent-bit
+        Record            processor_version ${PROCESSOR_VERSION}
+        Record            environment ${ENVIRONMENT}
+
+    # Parse Aurora error logs
+    [FILTER]
+        Name              parser
+        Match             aurora.error
+        Key_Name          message
+        Parser            aurora_error_log
+        Preserve_Key      On
+        Reserve_Data      On
+
+    # Parse Aurora slow query logs
+    [FILTER]
+        Name              parser
+        Match             aurora.slowquery
+        Key_Name          message
+        Parser            aurora_slowquery_start
+        Preserve_Key      On
+        Reserve_Data      On
+
+    # Parse Aurora general logs
+    [FILTER]
+        Name              parser
+        Match             aurora.general
+        Key_Name          message
+        Parser            aurora_general_log
+        Preserve_Key      On
+        Reserve_Data      On
+
+    # Extract additional fields from slow queries
+    [FILTER]
+        Name              lua
+        Match             aurora.slowquery
+        script            extract_query_info.lua
+        call              extract_query_info
+
+    # Add timestamp if missing
+    [FILTER]
+        Name              lua
+        Match             aurora.*
+        script            ensure_timestamp.lua
+        call              ensure_timestamp
+
+    # Output to OpenObserve
+    [OUTPUT]
+        Name              http
+        Match             aurora.*
+        Host              openobserve-service.aurora-logs.svc.cluster.local
+        Port              5080
+        URI               /api/default/${log_type}_logs/_json
+        Format            json_lines
+        Header_Tag        X-Log-Tag
+        Header            Authorization Basic ${OPENOBSERVE_AUTH}
+        Header            Content-Type application/json
+        # Use the timestamp parsed from log, not current time
+        Json_date_key     timestamp
+        Json_date_format  iso8601
+        # Also include _timestamp for OpenObserve
+        Preserve_Key      On
+        Retry_Limit       3
+        storage.total_limit_size  10M
+
+  # Lua script to extract query information
+  extract_query_info.lua: |
+    function extract_query_info(tag, timestamp, record)
+        local message = record["message"]
+        if message == nil then
+            return 0, timestamp, record
+        end
+        
+        -- Extract query time
+        local query_time = string.match(message, "Query_time:%s*([%d%.]+)")
+        if query_time then
+            record["query_time_seconds"] = tonumber(query_time)
+        end
+        
+        -- Extract lock time
+        local lock_time = string.match(message, "Lock_time:%s*([%d%.]+)")
+        if lock_time then
+            record["lock_time_seconds"] = tonumber(lock_time)
+        end
+        
+        -- Extract rows sent/examined
+        local rows_sent = string.match(message, "Rows_sent:%s*(%d+)")
+        if rows_sent then
+            record["rows_sent"] = tonumber(rows_sent)
+        end
+        
+        local rows_examined = string.match(message, "Rows_examined:%s*(%d+)")
+        if rows_examined then
+            record["rows_examined"] = tonumber(rows_examined)
+        end
+        
+        -- Extract SQL query
+        local sql_query = string.match(message, "SET timestamp=%d+;%s*(.+)")
+        if sql_query then
+            record["sql_query"] = sql_query
+            
+            -- Extract query type (SELECT, UPDATE, INSERT, etc.)
+            local query_type = string.match(sql_query, "^(%w+)")
+            if query_type then
+                record["query_type"] = string.upper(query_type)
+            end
+        end
+        
+        return 1, timestamp, record
+    end
+
+  # Lua script to ensure timestamp
+  ensure_timestamp.lua: |
+    function ensure_timestamp(tag, timestamp, record)
+        -- The 'timestamp' parameter contains the parsed timestamp from the log
+        -- Convert to milliseconds for OpenObserve
+        local timestamp_ms = math.floor(timestamp * 1000)
+        
+        -- Set _timestamp in milliseconds for OpenObserve
+        record["_timestamp"] = timestamp_ms
+        
+        -- Also keep the original timestamp string if available
+        if record["timestamp"] == nil then
+            record["timestamp"] = os.date("!%Y-%m-%d %H:%M:%S", timestamp)
+        end
+        
+        -- Set @timestamp in RFC3339 format for compatibility
+        record["@timestamp"] = os.date("!%Y-%m-%dT%H:%M:%SZ", timestamp)
+        
+        -- Debug logging
+        if record["message"] ~= nil then
+            local msg_preview = string.sub(record["message"], 1, 50)
+            print("Timestamp conversion - Original: " .. timestamp .. ", MS: " .. timestamp_ms .. ", Message: " .. msg_preview)
+        end
+        
+        return 1, timestamp, record
+    end
+---
+# Fluent Bit Parser Definitions
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-parsers
+  namespace: aurora-logs
+  labels:
+    app: fluent-bit
+    component: log-parser
+data:
+  custom_parsers.conf: |
+    # Aurora Error Log Parser
+    [PARSER]
+        Name              aurora_error_log
+        Format            regex
+        Regex             ^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?<thread_id>\d+)\s+\[(?<level>\w+)\]\s+(?<error_message>.*)$
+        Time_Key          timestamp
+        Time_Format       %Y-%m-%d %H:%M:%S
+        Time_Keep         On
+        Types             thread_id:integer
+
+    # Aurora Error Log Alternative Format
+    [PARSER]
+        Name              aurora_error_log_alt
+        Format            regex
+        Regex             ^(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(?<thread_id>\d+)\s+\[(?<level>\w+)\]\s+(?<error_message>.*)$
+        Time_Key          timestamp
+        Time_Format       %Y-%m-%dT%H:%M:%S.%LZ
+        Time_Keep         On
+        Types             thread_id:integer
+
+    # Aurora Slow Query Start
+    [PARSER]
+        Name              aurora_slowquery_start
+        Format            regex
+        Regex             ^#\s+Time:\s+(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)$
+        Time_Key          timestamp
+        Time_Format       %Y-%m-%dT%H:%M:%S.%LZ
+        Time_Keep         On
+
+    # Aurora Slow Query Metrics
+    [PARSER]
+        Name              aurora_slowquery_metrics
+        Format            regex
+        Regex             ^#\s+Query_time:\s+(?<query_time>[\d\.]+)\s+Lock_time:\s+(?<lock_time>[\d\.]+)\s+Rows_sent:\s+(?<rows_sent>\d+)\s+Rows_examined:\s+(?<rows_examined>\d+)$
+        Types             query_time:float lock_time:float rows_sent:integer rows_examined:integer
+
+    # Aurora Slow Query User/Host
+    [PARSER]
+        Name              aurora_slowquery_user
+        Format            regex
+        Regex             ^#\s+User@Host:\s+(?<user>\S+)\s*\[\S*\]\s*@\s*(?<host>\S+)\s*\[(?<ip_address>[\d\.]*)\]$
+
+    # Aurora General Log Parser
+    [PARSER]
+        Name              aurora_general_log
+        Format            regex
+        Regex             ^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?<thread_id>\d+)\s+(?<command>\w+)\s+(?<argument>.*)$
+        Time_Key          timestamp
+        Time_Format       %Y-%m-%d %H:%M:%S
+        Time_Keep         On
+        Types             thread_id:integer
+
+    # MySQL Timestamp Parser (for SET timestamp)
+    [PARSER]
+        Name              mysql_timestamp
+        Format            regex
+        Regex             ^SET timestamp=(?<unix_timestamp>\d+);$
+        Types             unix_timestamp:integer
+
+    # Multiline Parser for Slow Query
+    [MULTILINE_PARSER]
+        Name              multiline_slowquery
+        Type              regex
+        Flush_timeout     2000
+        Rule              "start_state" "/^# Time:/" "query_start"
+        Rule              "query_start" "/^# User@Host:/" "user_info"
+        Rule              "user_info" "/^# Query_time:/" "query_metrics"
+        Rule              "query_metrics" "/^SET timestamp=/" "query_sql"
+        Rule              "query_sql" "/.*;$/" "query_end"

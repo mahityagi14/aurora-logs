@@ -1,0 +1,66 @@
+---
+# PodDisruptionBudget for Discovery Service
+# Ensures at least 1 discovery pod is always available during updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: discovery-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: discovery
+---
+# PodDisruptionBudget for Processor Master
+# Ensures the master processor is always available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: processor-master-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: processor
+      role: master
+---
+# PodDisruptionBudget for Kafka
+# Ensures Kafka remains available during updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: kafka
+---
+# PodDisruptionBudget for OpenObserve
+# Ensures log analytics remains available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openobserve-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: openobserve
+---
+# PodDisruptionBudget for Valkey
+# Ensures cache remains available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: valkey-pdb
+  namespace: aurora-logs
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: valkey

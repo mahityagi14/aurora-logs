@@ -26,6 +26,7 @@ import (
 	dynamoTypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/segmentio/kafka-go"
+	"net"
 )
 
 // Configuration helpers
@@ -225,6 +226,11 @@ type Config struct {
 	CircuitBreakerTimeout time.Duration
 	ConnectionPoolSize   int
 	ConnectionTimeout    time.Duration
+	// Fluent Bit forwarding configuration
+	LogForwardEnabled    bool
+	LogForwardHost       string
+	LogForwardPort       string
+	ParsingMode          string // passthrough, minimal, full
 }
 
 type LogMessage struct {
@@ -239,6 +245,93 @@ type LogMessage struct {
 }
 
 type ParsedLogEntry map[string]interface{}
+
+// FluentBitForwarder handles TCP forwarding to Fluent Bit
+type FluentBitForwarder struct {
+	address      string
+	conn         net.Conn
+	mu           sync.Mutex
+	connected    bool
+	reconnectCh  chan struct{}
+}
+
+// NewFluentBitForwarder creates a new Fluent Bit forwarder
+func NewFluentBitForwarder(host, port string) *FluentBitForwarder {
+	return &FluentBitForwarder{
+		address:     net.JoinHostPort(host, port),
+		reconnectCh: make(chan struct{}, 1),
+	}
+}
+
+// Connect establishes connection to Fluent Bit
+func (f *FluentBitForwarder) Connect() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.connected && f.conn != nil {
+		return nil
+	}
+
+	conn, err := net.DialTimeout("tcp", f.address, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Fluent Bit at %s: %w", f.address, err)
+	}
+
+	f.conn = conn
+	f.connected = true
+	slog.Info("Connected to Fluent Bit", "address", f.address)
+	return nil
+}
+
+// Forward sends a log entry to Fluent Bit
+func (f *FluentBitForwarder) Forward(tag string, timestamp time.Time, record map[string]interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if !f.connected || f.conn == nil {
+		if err := f.Connect(); err != nil {
+			return err
+		}
+	}
+
+	// Fluent Bit forward protocol format: [tag, [[timestamp, record]]]
+	entry := []interface{}{
+		tag,
+		[]interface{}{
+			[]interface{}{timestamp.Unix(), record},
+		},
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("failed to marshal entry: %w", err)
+	}
+
+	// Set write deadline
+	f.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	
+	_, err = f.conn.Write(append(data, '\n'))
+	if err != nil {
+		f.connected = false
+		f.conn.Close()
+		return fmt.Errorf("failed to write to Fluent Bit: %w", err)
+	}
+
+	return nil
+}
+
+// Close closes the connection to Fluent Bit
+func (f *FluentBitForwarder) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.conn != nil {
+		err := f.conn.Close()
+		f.connected = false
+		return err
+	}
+	return nil
+}
 
 // DynamoDBClientInterface defines the interface for DynamoDB operations
 type DynamoDBClientInterface interface {
@@ -260,6 +353,7 @@ type BatchProcessor struct {
 	circuitBreaker   *CircuitBreaker
 	shutdownChan     chan struct{}
 	workerCount      int
+	fluentBitForwarder *FluentBitForwarder
 }
 
 type BatchItem struct {
@@ -300,6 +394,21 @@ func main() {
 		CircuitBreakerTimeout: time.Duration(getEnvAsInt("CIRCUIT_BREAKER_TIMEOUT_SEC", 30)) * time.Second,
 		ConnectionPoolSize:   getEnvAsInt("CONNECTION_POOL_SIZE", 100),
 		ConnectionTimeout:    time.Duration(getEnvAsInt("CONNECTION_TIMEOUT_SEC", 30)) * time.Second,
+		// Fluent Bit forwarding configuration
+		LogForwardEnabled:    os.Getenv("LOG_FORWARD_ENABLED") == "true",
+		LogForwardHost:       getEnvOrDefault("LOG_FORWARD_HOST", "localhost"),
+		LogForwardPort:       getEnvOrDefault("LOG_FORWARD_PORT", "24224"),
+		ParsingMode:          getEnvOrDefault("PARSING_MODE", "full"),
+	}
+	
+	// Log configuration mode
+	if cfg.LogForwardEnabled {
+		slog.Info("Fluent Bit forwarding enabled", 
+			"host", cfg.LogForwardHost, 
+			"port", cfg.LogForwardPort,
+			"parsing_mode", cfg.ParsingMode)
+	} else {
+		slog.Info("Using direct OpenObserve integration", "parsing_mode", cfg.ParsingMode)
 	}
 
 	// Configure AWS SDK with IMDSv2 support
@@ -340,6 +449,16 @@ func main() {
 		cfg.OpenObservePass,
 	)
 
+	// Create Fluent Bit forwarder if enabled
+	var fluentBitForwarder *FluentBitForwarder
+	if cfg.LogForwardEnabled {
+		fluentBitForwarder = NewFluentBitForwarder(cfg.LogForwardHost, cfg.LogForwardPort)
+		if err := fluentBitForwarder.Connect(); err != nil {
+			slog.Warn("Failed to connect to Fluent Bit, will retry", "error", err)
+		}
+		defer fluentBitForwarder.Close()
+	}
+
 	processor := &BatchProcessor{
 		config:           cfg,
 		rdsClient:        rds.NewFromConfig(awsCfg),
@@ -350,6 +469,7 @@ func main() {
 		circuitBreaker:   NewCircuitBreaker(cfg.CircuitBreakerMax, cfg.CircuitBreakerTimeout),
 		shutdownChan:     make(chan struct{}),
 		workerCount:      cfg.MaxConcurrency,
+		fluentBitForwarder: fluentBitForwarder,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -555,6 +675,169 @@ func (bp *BatchProcessor) worker(ctx context.Context, workerID int, itemsChan <-
 	}
 }
 
+// extractTimestampFromLine attempts to extract timestamp from a log line
+func extractTimestampFromLine(line string, logType string) time.Time {
+	switch logType {
+	case "error":
+		// MySQL error log: "2025-08-02 12:34:56"
+		if len(line) >= 19 {
+			if ts, err := time.Parse("2006-01-02 15:04:05", line[:19]); err == nil {
+				return ts
+			}
+		}
+	case "slowquery":
+		// Slow query: "# Time: 2025-08-02T15:04:05.000000Z"
+		if strings.HasPrefix(line, "# Time:") {
+			tsStr := strings.TrimSpace(strings.TrimPrefix(line, "# Time:"))
+			layouts := []string{
+				"2006-01-02T15:04:05.000000Z",
+				"2006-01-02T15:04:05Z",
+				"060102 15:04:05",
+			}
+			for _, layout := range layouts {
+				if ts, err := time.Parse(layout, tsStr); err == nil {
+					return ts
+				}
+			}
+		}
+		// Alternative: "SET timestamp=1234567890;"
+		if strings.HasPrefix(line, "SET timestamp=") {
+			if parts := strings.Split(line, "="); len(parts) == 2 {
+				tsStr := strings.TrimSuffix(strings.TrimSpace(parts[1]), ";")
+				if unixTs, err := strconv.ParseInt(tsStr, 10, 64); err == nil {
+					return time.Unix(unixTs, 0)
+				}
+			}
+		}
+	default:
+		// General log: "2025-08-02 12:34:56"
+		if len(line) >= 19 {
+			if ts, err := time.Parse("2006-01-02 15:04:05", line[:19]); err == nil {
+				return ts
+			}
+		}
+	}
+	return time.Time{}
+}
+
+// forwardLogToFluentBit sends raw logs to Fluent Bit via TCP forward protocol
+func (bp *BatchProcessor) forwardLogToFluentBit(ctx context.Context, logMsg LogMessage) error {
+	if bp.fluentBitForwarder == nil {
+		return fmt.Errorf("Fluent Bit forwarder not initialized")
+	}
+
+	slog.Info("Forwarding log to Fluent Bit", "instance_id", logMsg.InstanceID, "file", logMsg.LogFileName)
+	
+	// Update status to 'processing'
+	if err := bp.updateLogStatus(ctx, logMsg, "processing", "", 0); err != nil {
+		slog.Error("Failed to update status to processing", "error", err)
+	}
+	
+	// Download log with streaming
+	reader, err := bp.downloadLogStreaming(ctx, logMsg, "")
+	if err != nil {
+		// Update status to 'failed'
+		if statusErr := bp.updateLogStatus(ctx, logMsg, "failed", fmt.Sprintf("Download failed: %v", err), 0); statusErr != nil {
+			slog.Error("Failed to update status to failed", "error", statusErr)
+		}
+		return err
+	}
+	defer reader.Close()
+	
+	// Determine tag based on log type
+	tag := fmt.Sprintf("aurora.%s", logMsg.LogType)
+	
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 64KB initial, 1MB max
+	
+	lineCount := 0
+	batchCount := 0
+	batch := make([]map[string]interface{}, 0, 100)
+	
+	// For passthrough mode, we still need to extract timestamp from first line
+	var logTimestamp time.Time
+	timestampExtracted := false
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineCount++
+		
+		// Try to extract timestamp from first few lines
+		if !timestampExtracted && lineCount <= 10 {
+			ts := extractTimestampFromLine(line, logMsg.LogType)
+			if !ts.IsZero() {
+				logTimestamp = ts
+				timestampExtracted = true
+				slog.Debug("Extracted timestamp from log", "timestamp", logTimestamp)
+			}
+		}
+		
+		// Use extracted timestamp or current time
+		entryTime := logTimestamp
+		if entryTime.IsZero() {
+			entryTime = time.Now()
+		}
+		
+		// Create minimal record with raw log line
+		record := map[string]interface{}{
+			"message":       line,
+			"log_type":      logMsg.LogType,
+			"instance_id":   logMsg.InstanceID,
+			"cluster_id":    logMsg.ClusterID,
+			"log_file_name": logMsg.LogFileName,
+			"line_number":   lineCount,
+		}
+		
+		batch = append(batch, record)
+		
+		// Send batch when full
+		if len(batch) >= 100 {
+			for _, entry := range batch {
+				if err := bp.fluentBitForwarder.Forward(tag, entryTime, entry); err != nil {
+					slog.Warn("Failed to forward to Fluent Bit", "error", err)
+				}
+			}
+			batchCount++
+			batch = batch[:0] // Reset batch
+		}
+	}
+	
+	// Send remaining batch
+	if len(batch) > 0 {
+		entryTime := logTimestamp
+		if entryTime.IsZero() {
+			entryTime = time.Now()
+		}
+		for _, entry := range batch {
+			if err := bp.fluentBitForwarder.Forward(tag, entryTime, entry); err != nil {
+				slog.Warn("Failed to forward to Fluent Bit", "error", err)
+			}
+		}
+		batchCount++
+	}
+	
+	if err := scanner.Err(); err != nil {
+		// Update status to 'failed'
+		if statusErr := bp.updateLogStatus(ctx, logMsg, "failed", fmt.Sprintf("Scanner error: %v", err), lineCount); statusErr != nil {
+			slog.Error("Failed to update status to failed", "error", statusErr)
+		}
+		return fmt.Errorf("error reading log file: %w", err)
+	}
+	
+	// Update status to 'completed'
+	if err := bp.updateLogStatus(ctx, logMsg, "completed", "", lineCount); err != nil {
+		slog.Error("Failed to update status to completed", "error", err)
+	}
+	
+	slog.Info("Forwarding completed", 
+		"instance_id", logMsg.InstanceID,
+		"file", logMsg.LogFileName,
+		"total_lines", lineCount,
+		"batches_sent", batchCount)
+	
+	return nil
+}
+
 func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMessage) error {
 	startTime := time.Now()
 	defer func() {
@@ -562,6 +845,11 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 	}()
 	
 	slog.Info("Processing log", "instance_id", logMsg.InstanceID, "file", logMsg.LogFileName, "size", logMsg.Size)
+	
+	// Check if we should forward to Fluent Bit
+	if bp.config.LogForwardEnabled && bp.config.ParsingMode == "passthrough" {
+		return bp.forwardLogToFluentBit(ctx, logMsg)
+	}
 	
 	// Check for existing checkpoint
 	checkpointMarker, err := bp.getCheckpoint(ctx, logMsg)
@@ -633,7 +921,21 @@ func (bp *BatchProcessor) processLogOptimized(ctx context.Context, logMsg LogMes
 			entry["instance_id"] = logMsg.InstanceID
 			entry["cluster_id"] = logMsg.ClusterID
 			entry["log_file_name"] = logMsg.LogFileName
-			entry["@timestamp"] = time.Now().Format(time.RFC3339)
+			
+			// Use the log's original timestamp if available, otherwise use current time
+			if ts, ok := entry["timestamp"].(string); ok && ts != "" {
+				// Parse and convert timestamp to OpenObserve format
+				if parsedTime := parseLogTimestamp(ts, logMsg.LogType); !parsedTime.IsZero() {
+					entry["_timestamp"] = parsedTime.UnixMilli() // OpenObserve uses milliseconds
+					entry["@timestamp"] = parsedTime.Format(time.RFC3339)
+				} else {
+					entry["_timestamp"] = time.Now().UnixMilli()
+					entry["@timestamp"] = time.Now().Format(time.RFC3339)
+				}
+			} else {
+				entry["_timestamp"] = time.Now().UnixMilli()
+				entry["@timestamp"] = time.Now().Format(time.RFC3339)
+			}
 			
 			parsedCount++
 			batch = append(batch, entry)
@@ -897,6 +1199,47 @@ func (bp *BatchProcessor) getParser(logType string) func(string) ParsedLogEntry 
 	}
 }
 
+// parseLogTimestamp parses timestamps from different log formats
+func parseLogTimestamp(timestamp string, logType string) time.Time {
+	var layouts []string
+	
+	switch logType {
+	case "error":
+		// MySQL error log format: 2025-08-02 12:34:56
+		layouts = []string{
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05Z",
+			"2006-01-02T15:04:05.000Z",
+		}
+	case "slowquery":
+		// MySQL slow query format variations
+		layouts = []string{
+			"2006-01-02T15:04:05.000000Z",
+			"2006-01-02 15:04:05",
+			"060102 15:04:05", // Older MySQL format
+			time.RFC3339,
+		}
+	default:
+		// General log formats
+		layouts = []string{
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05Z",
+			time.RFC3339,
+			time.RFC3339Nano,
+		}
+	}
+	
+	// Try each layout
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, timestamp); err == nil {
+			return t
+		}
+	}
+	
+	// If no layout matches, return zero time
+	return time.Time{}
+}
+
 // Parser functions
 func parseErrorLog(line string) ParsedLogEntry {
 	// Skip empty lines
@@ -952,6 +1295,19 @@ func parseSlowQueryLog(line string) ParsedLogEntry {
 		return ParsedLogEntry{
 			"timestamp": timestamp,
 			"event_type": "query_start",
+		}
+	}
+	
+	// Alternative timestamp format (SET timestamp=unix_timestamp)
+	if strings.HasPrefix(line, "SET timestamp=") {
+		if parts := strings.Split(line, "="); len(parts) == 2 {
+			tsStr := strings.TrimSuffix(strings.TrimSpace(parts[1]), ";")
+			if unixTs, err := strconv.ParseInt(tsStr, 10, 64); err == nil {
+				return ParsedLogEntry{
+					"timestamp": time.Unix(unixTs, 0).Format("2006-01-02 15:04:05"),
+					"event_type": "query_timestamp",
+				}
+			}
 		}
 	}
 	
@@ -1020,10 +1376,44 @@ func parseGenericLog(line string) ParsedLogEntry {
 		return nil
 	}
 	
-	return ParsedLogEntry{
-		"message": line,
+	// Try to extract timestamp from the beginning of the line
+	// Common formats: "2025-08-02 12:34:56" or "2025-08-02T12:34:56"
+	var timestamp string
+	var message string
+	
+	// Check for ISO-like timestamp at the beginning
+	if len(line) > 19 {
+		possibleTS := line[:19]
+		if strings.Count(possibleTS, "-") == 2 && (strings.Count(possibleTS, ":") == 2 || strings.Count(possibleTS, "T") == 1) {
+			timestamp = possibleTS
+			message = strings.TrimSpace(line[19:])
+		}
+	}
+	
+	// If no timestamp found, check for Unix timestamp
+	if timestamp == "" && strings.HasPrefix(line, "[") {
+		if end := strings.Index(line, "]"); end > 1 && end < 20 {
+			tsStr := line[1:end]
+			if unixTs, err := strconv.ParseInt(tsStr, 10, 64); err == nil && unixTs > 1000000000 {
+				timestamp = time.Unix(unixTs, 0).Format("2006-01-02 15:04:05")
+				message = strings.TrimSpace(line[end+1:])
+			}
+		}
+	}
+	
+	// Build result
+	result := ParsedLogEntry{
 		"raw_line": line,
 	}
+	
+	if timestamp != "" {
+		result["timestamp"] = timestamp
+		result["message"] = message
+	} else {
+		result["message"] = line
+	}
+	
+	return result
 }
 
 // ============================================================================

@@ -1,0 +1,85 @@
+---
+# HPA for Processor Service - Conservative scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: processor-hpa
+  namespace: aurora-logs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: processor
+  minReplicas: 1  # Start with 1 replica
+  maxReplicas: 5  # Max 5 replicas
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale up only when CPU > 80%
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 85  # Scale up only when memory > 85%
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # Wait 10 minutes before scaling down
+      policies:
+      - type: Pods
+        value: 1  # Remove only 1 pod at a time
+        periodSeconds: 300  # Every 5 minutes
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 180  # Wait 3 minutes before scaling up
+      policies:
+      - type: Pods
+        value: 1  # Add only 1 pod at a time
+        periodSeconds: 180  # Every 3 minutes
+      selectPolicy: Max
+
+---
+# HPA for Discovery Service - Conservative scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: discovery-hpa
+  namespace: aurora-logs
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: discovery
+  minReplicas: 1  # Start with 1 replica
+  maxReplicas: 3  # Max 3 replicas (discovery is less resource intensive)
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale up only when CPU > 80%
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 85  # Scale up only when memory > 85%
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # Wait 10 minutes before scaling down
+      policies:
+      - type: Pods
+        value: 1  # Remove only 1 pod at a time
+        periodSeconds: 300  # Every 5 minutes
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 180  # Wait 3 minutes before scaling up
+      policies:
+      - type: Pods
+        value: 1  # Add only 1 pod at a time
+        periodSeconds: 180  # Every 3 minutes
+      selectPolicy: Max

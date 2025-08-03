@@ -1,0 +1,218 @@
+---
+# Processor Master - Always running, handles coordination
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor-master
+  namespace: aurora-logs
+  labels:
+    app: processor
+    tier: master
+spec:
+  replicas: 1  # Always exactly 1 master
+  selector:
+    matchLabels:
+      app: processor
+      role: master
+  template:
+    metadata:
+      labels:
+        app: processor
+        role: master
+        tier: control
+    spec:
+      serviceAccountName: processor-sa
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                - t3.small  # Prefer smallest instance type
+                - t3a.small
+      containers:
+      - name: processor
+        image: aurora-processor:latest
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "100m"     # Minimal for master
+            memory: "256Mi"
+          limits:
+            cpu: "300m"
+            memory: "512Mi"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        env:
+        # Master-specific configuration
+        - name: PROCESSOR_ROLE
+          value: "master"
+        - name: PROCESSOR_MODE
+          value: "coordinator"
+        - name: CONSUMER_GROUP
+          value: "processor-master"
+        - name: KAFKA_PARTITION_ASSIGNMENT
+          value: "static"  # Master handles partition assignment
+        - name: MAX_BATCH_SIZE
+          value: "10"      # Small batches for master
+        - name: GOMAXPROCS
+          value: "1"
+        - name: LOG_FORWARD_ENABLED
+          value: "true"
+        - name: PARSING_MODE
+          value: "passthrough"
+        ports:
+        - name: metrics
+          containerPort: 9090
+        - name: health
+          containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+# Processor Slaves - Scale based on load
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor-slaves
+  namespace: aurora-logs
+  labels:
+    app: processor
+    tier: slave
+spec:
+  replicas: 0  # Start with 0, scale based on load
+  selector:
+    matchLabels:
+      app: processor
+      role: slave
+  template:
+    metadata:
+      labels:
+        app: processor
+        role: slave
+        tier: worker
+      annotations:
+        # Fargate profile selector
+        eks.amazonaws.com/compute-type: "fargate"
+    spec:
+      serviceAccountName: processor-sa
+      terminationGracePeriodSeconds: 30  # Quick termination for cost savings
+      containers:
+      - name: processor
+        image: aurora-processor:latest
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "50m"      # Minimal for slaves
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        env:
+        # Slave-specific configuration
+        - name: PROCESSOR_ROLE
+          value: "slave"
+        - name: PROCESSOR_MODE
+          value: "worker"
+        - name: CONSUMER_GROUP
+          value: "processor-slaves"
+        - name: KAFKA_PARTITION_ASSIGNMENT
+          value: "dynamic"  # Slaves get assigned partitions
+        - name: MAX_BATCH_SIZE
+          value: "100"      # Larger batches for efficiency
+        - name: PROCESSING_TIMEOUT
+          value: "300s"     # 5 minute timeout
+        - name: GOMAXPROCS
+          value: "1"
+        - name: LOG_FORWARD_ENABLED
+          value: "true"
+        - name: PARSING_MODE
+          value: "passthrough"
+        # Fluent Bit sidecar for slaves
+      - name: fluent-bit
+        image: fluent/fluent-bit:3.2.2
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+        ports:
+        - name: forward
+          containerPort: 24224
+          protocol: TCP
+        volumeMounts:
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+        env:
+        - name: OPENOBSERVE_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: fluent-bit-auth
+              key: auth-token
+      volumes:
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+---
+# Service for processor metrics aggregation
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-metrics
+  namespace: aurora-logs
+  labels:
+    app: processor
+spec:
+  selector:
+    app: processor
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+# ConfigMap for master-slave coordination
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: processor-coordination
+  namespace: aurora-logs
+data:
+  # Coordination settings
+  COORDINATION_ENABLED: "true"
+  MASTER_ENDPOINT: "processor-master.aurora-logs.svc.cluster.local:8080"
+  SLAVE_REGISTRATION_INTERVAL: "30s"
+  PARTITION_REBALANCE_INTERVAL: "300s"
+  
+  # Load distribution
+  MIN_PARTITIONS_PER_SLAVE: "1"
+  MAX_PARTITIONS_PER_SLAVE: "3"
+  LOAD_THRESHOLD_SCALE_UP: "1000"    # Messages behind
+  LOAD_THRESHOLD_SCALE_DOWN: "100"   # Messages behind
+  
+  # Cost optimization
+  IDLE_TIMEOUT: "300s"               # 5 minutes idle before scale down
+  BATCH_WAIT_TIMEOUT: "30s"          # Wait for batch to fill
+  PROCESSING_CONCURRENCY: "2"        # Concurrent processing per slave

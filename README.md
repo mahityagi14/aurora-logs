@@ -9,6 +9,15 @@ A distributed log collection and analysis system for AWS Aurora databases.
 - **Kafka**: Message queue for reliable delivery
 - **OpenObserve**: Log storage and analytics
 
+## Key Features
+
+- **Automatic Discovery**: Continuously monitors Aurora MySQL instances
+- **Multi-Log Support**: Processes error logs, slow query logs, and general logs
+- **Timestamp Preservation**: Maintains original Aurora log timestamps in OpenObserve
+- **Scalable Processing**: Distributed architecture with Kafka
+- **Fault Tolerance**: Checkpoint/resume, retry logic, and circuit breakers
+- **Production Ready**: Health checks, monitoring, and autoscaling
+
 ## Quick Start
 
 ### Prerequisites

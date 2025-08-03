@@ -1,0 +1,245 @@
+---
+# ServiceAccount for Fluent Bit K8s log collector
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit-k8s
+  namespace: aurora-logs
+---
+# ClusterRole for reading K8s logs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit-k8s
+rules:
+- apiGroups: [""]
+  resources:
+  - namespaces
+  - pods
+  - nodes
+  verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit-k8s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit-k8s
+subjects:
+- kind: ServiceAccount
+  name: fluent-bit-k8s
+  namespace: aurora-logs
+---
+# ConfigMap for Fluent Bit K8s logs configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-k8s-config
+  namespace: aurora-logs
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Daemon Off
+        Flush 1
+        Log_Level info
+        Parsers_File parsers.conf
+        Parsers_File custom_parsers.conf
+        HTTP_Server On
+        HTTP_Listen 0.0.0.0
+        HTTP_Port 2020
+        Health_Check On
+        storage.path /var/log/flb-storage/
+        storage.sync normal
+        storage.checksum off
+        storage.max_chunks_up 128
+        storage.backlog.mem_limit 5M
+
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*_aurora-logs_*.log
+        multiline.parser cri
+        Tag kube.*
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+        Storage.type filesystem
+        DB /var/log/flb_kube.db
+        DB.locking true
+
+    [FILTER]
+        Name kubernetes
+        Match kube.*
+        Kube_URL https://kubernetes.default.svc:443
+        Kube_CA_File /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix kube.var.log.containers.
+        Merge_Log On
+        Keep_Log Off
+        K8S-Logging.Parser On
+        K8S-Logging.Exclude Off
+        Labels On
+        Annotations Off
+
+    [FILTER]
+        Name modify
+        Match kube.*
+        Add _index k8s-logs
+        Add _stream kubernetes
+        Add _timestamp ${TIMESTAMP}
+
+    [FILTER]
+        Name lua
+        Match kube.*
+        script /fluent-bit/scripts/timestamp.lua
+        call add_timestamp
+
+    [OUTPUT]
+        Name http
+        Match kube.*
+        Host openobserve-service.aurora-logs.svc.cluster.local
+        Port 5080
+        URI /api/default/k8s-logs/_json
+        Format json
+        Json_date_key _timestamp
+        Json_date_format iso8601
+        tls Off
+        tls.verify Off
+        net.keepalive on
+        net.keepalive_idle_timeout 30
+        compress gzip
+        Header Authorization Basic YWRtaW5AZXhhbXBsZS5jb206Q29tcGxleHBhc3MjMTIz
+        Header X-Scope-OrgID default
+        Retry_Limit 5
+        storage.total_limit_size 50M
+
+    # Also send to S3 for long-term storage
+    [OUTPUT]
+        Name s3
+        Match kube.*
+        bucket aurora-log-system-k8s-logs
+        region us-east-1
+        use_put_object On
+        total_file_size 50M
+        upload_timeout 10m
+        store_dir /tmp/fluent-bit/s3
+        s3_key_format /k8s-logs/year=%Y/month=%m/day=%d/hour=%H/%{hostname}_%{uuid}.gz
+        compression gzip
+        content_type application/gzip
+
+  parsers.conf: |
+    [PARSER]
+        Name cri
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep On
+
+    [PARSER]
+        Name kube-custom
+        Format regex
+        Regex (?<pod_name>[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)_(?<namespace_name>[^_]+)_(?<container_name>.+)-(?<container_id>[a-z0-9]{64})\.log$
+
+  timestamp.lua: |
+    function add_timestamp(tag, timestamp, record)
+        -- Ensure timestamp is in milliseconds for OpenObserve
+        local ts_millis = math.floor(timestamp * 1000)
+        record["_timestamp"] = ts_millis
+        
+        -- Add formatted timestamp
+        record["@timestamp"] = os.date("!%Y-%m-%dT%H:%M:%S.000Z", timestamp)
+        
+        -- Add additional metadata
+        if record["kubernetes"] then
+            record["k8s_cluster"] = "aurora-cluster"
+            record["k8s_region"] = "us-east-1"
+        end
+        
+        return 1, timestamp, record
+    end
+
+---
+# DaemonSet for Fluent Bit K8s log collector
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit-k8s
+  namespace: aurora-logs
+  labels:
+    app: fluent-bit-k8s
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit-k8s
+  template:
+    metadata:
+      labels:
+        app: fluent-bit-k8s
+    spec:
+      serviceAccountName: fluent-bit-k8s
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        effect: NoSchedule
+      containers:
+      - name: fluent-bit
+        image: fluent/fluent-bit:3.2.2
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 20m
+            memory: 100Mi
+          limits:
+            cpu: 100m
+            memory: 200Mi
+        env:
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: FLUENT_BIT_OUTPUT
+          value: "openobserve"
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+        - name: fluent-bit-scripts
+          mountPath: /fluent-bit/scripts/
+        - name: flb-storage
+          mountPath: /var/log/flb-storage/
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-k8s-config
+          items:
+          - key: fluent-bit.conf
+            path: fluent-bit.conf
+          - key: parsers.conf
+            path: parsers.conf
+      - name: fluent-bit-scripts
+        configMap:
+          name: fluent-bit-k8s-config
+          items:
+          - key: timestamp.lua
+            path: timestamp.lua
+      - name: flb-storage
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1

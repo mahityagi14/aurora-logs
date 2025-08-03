@@ -1,0 +1,146 @@
+---
+# Optimized Discovery Service with minimal resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-optimized
+  namespace: aurora-logs
+  labels:
+    app: discovery
+    version: optimized
+spec:
+  replicas: 1  # Always 1 master running
+  selector:
+    matchLabels:
+      app: discovery
+  template:
+    metadata:
+      labels:
+        app: discovery
+        role: master
+    spec:
+      serviceAccountName: discovery-sa
+      containers:
+      - name: discovery
+        image: aurora-discovery:latest
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "50m"      # Minimal CPU
+            memory: "128Mi" # Minimal memory
+          limits:
+            cpu: "200m"     # Burst capability
+            memory: "256Mi"
+        env:
+        - name: GOMAXPROCS
+          value: "1"  # Limit Go processes
+        - name: GOGC
+          value: "50" # More aggressive garbage collection
+---
+# Optimized Kafka with single replica
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-optimized
+  namespace: aurora-logs
+  labels:
+    app: kafka
+    version: optimized
+spec:
+  replicas: 1  # Single instance for cost savings
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+      - name: kafka
+        image: aurora-kafka:latest
+        resources:
+          requests:
+            cpu: "200m"    # Reduced from 500m
+            memory: "1Gi"  # Reduced from 2Gi
+          limits:
+            cpu: "500m"
+            memory: "2Gi"
+        env:
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx768M -Xms512M"  # Reduced heap size
+        - name: KAFKA_JVM_PERFORMANCE_OPTS
+          value: "-XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:+UseCompressedOops"
+---
+# Optimized OpenObserve
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openobserve-optimized
+  namespace: aurora-logs
+  labels:
+    app: openobserve
+    version: optimized
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openobserve
+  template:
+    metadata:
+      labels:
+        app: openobserve
+    spec:
+      serviceAccountName: openobserve-sa
+      containers:
+      - name: openobserve
+        image: public.ecr.aws/zinclabs/openobserve:v0.15.0
+        resources:
+          requests:
+            cpu: "500m"    # Reduced from 1000m
+            memory: "2Gi"  # Reduced from 4Gi
+          limits:
+            cpu: "1000m"
+            memory: "4Gi"
+        env:
+        - name: ZO_MEMORY_CACHE_ENABLED
+          value: "true"
+        - name: ZO_MEMORY_CACHE_CACHE_LATEST_FILES
+          value: "10"  # Reduced cache
+        - name: ZO_MEMORY_CACHE_MAX_SIZE
+          value: "512"  # 512MB cache limit
+---
+# Optimized Valkey (Redis)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey-optimized
+  namespace: aurora-logs
+  labels:
+    app: valkey
+    version: optimized
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+      - name: valkey
+        image: valkey/valkey:8.1.3
+        resources:
+          requests:
+            cpu: "50m"      # Reduced from 100m
+            memory: "128Mi" # Reduced from 256Mi
+          limits:
+            cpu: "200m"     # Reduced from 500m
+            memory: "512Mi" # Reduced from 1Gi
+        args: 
+        - "--maxmemory"
+        - "400mb"
+        - "--maxmemory-policy"
+        - "allkeys-lru"

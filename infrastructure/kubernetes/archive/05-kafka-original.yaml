@@ -1,0 +1,140 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: aurora-logs
+  labels:
+    app: kafka
+    component: message-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: message-broker
+    spec:
+      serviceAccountName: kafka-sa
+      nodeSelector:
+        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
+      containers:
+      - name: kafka
+        image: confluentinc/cp-kafka:8.0.0.arm64
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9092
+          name: broker
+        - containerPort: 9093
+          name: controller
+        env:
+        # KRaft mode configuration
+        - name: CLUSTER_ID
+          value: "MkU3OEVBNzE2Q0IyNDczNg"
+        - name: KAFKA_NODE_ID
+          value: "1"
+        - name: KAFKA_PROCESS_ROLES
+          value: "broker,controller"
+        - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+          value: "1@localhost:9093"
+        - name: KAFKA_LISTENERS
+          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://kafka-service.aurora-logs.svc.cluster.local:9092"
+        - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+        - name: KAFKA_CONTROLLER_LISTENER_NAMES
+          value: "CONTROLLER"
+        - name: KAFKA_INTER_BROKER_LISTENER_NAME
+          value: "PLAINTEXT"
+        - name: KAFKA_LOG_DIRS
+          value: "/var/lib/kafka/data"
+        - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: "1"
+        - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+          value: "0"
+        - name: KAFKA_LOG_RETENTION_HOURS
+          value: "168"
+        - name: KAFKA_LOG_SEGMENT_BYTES
+          value: "1073741824"
+        # JVM Settings
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx2G -Xms2G"
+        - name: KAFKA_JVM_PERFORMANCE_OPTS
+          value: "-XX:+UseG1GC -XX:MaxGCPauseMillis=20"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "1000m"
+            memory: "4Gi"
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /var/lib/kafka
+        command:
+        - sh
+        - -c
+        - |
+          mkdir -p /var/lib/kafka/data
+          # Create server.properties
+          cat > /tmp/server.properties <<EOF
+          node.id=${KAFKA_NODE_ID}
+          process.roles=${KAFKA_PROCESS_ROLES}
+          controller.quorum.voters=${KAFKA_CONTROLLER_QUORUM_VOTERS}
+          listeners=${KAFKA_LISTENERS}
+          advertised.listeners=${KAFKA_ADVERTISED_LISTENERS}
+          listener.security.protocol.map=${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP}
+          controller.listener.names=${KAFKA_CONTROLLER_LISTENER_NAMES}
+          inter.broker.listener.name=${KAFKA_INTER_BROKER_LISTENER_NAME}
+          log.dirs=${KAFKA_LOG_DIRS}
+          auto.create.topics.enable=${KAFKA_AUTO_CREATE_TOPICS_ENABLE}
+          offsets.topic.replication.factor=${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR}
+          transaction.state.log.replication.factor=${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR}
+          transaction.state.log.min.isr=${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR}
+          num.partitions=10
+          default.replication.factor=1
+          log.retention.hours=168
+          log.segment.bytes=1073741824
+          EOF
+          
+          # Format storage if needed
+          if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+            kafka-storage format -t ${CLUSTER_ID} -c /tmp/server.properties
+          fi
+          
+          # Start Kafka
+          exec kafka-server-start /tmp/server.properties
+      volumes:
+      - name: kafka-data
+        persistentVolumeClaim:
+          claimName: kafka-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-service
+  namespace: aurora-logs
+  labels:
+    app: kafka
+    component: message-broker
+spec:
+  ports:
+  - name: broker
+    port: 9092
+    targetPort: 9092
+  - name: controller
+    port: 9093
+    targetPort: 9093
+  selector:
+    app: kafka
+  type: ClusterIP

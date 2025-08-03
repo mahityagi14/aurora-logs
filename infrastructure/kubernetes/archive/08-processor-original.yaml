@@ -1,0 +1,211 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: aurora-logs
+  labels:
+    app: processor
+    component: log-processor
+spec:
+  replicas: 1  # Start with 1, HPA will scale as needed
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+        component: log-processor
+    spec:
+      serviceAccountName: processor-sa
+      nodeSelector:
+        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
+      dnsPolicy: ClusterFirst
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: processor
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: OPENOBSERVE_USER
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-email
+        - name: OPENOBSERVE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-password
+        # New environment variables for Fluent Bit integration
+        - name: LOG_FORWARD_ENABLED
+          value: "true"
+        - name: LOG_FORWARD_HOST
+          value: "localhost"
+        - name: LOG_FORWARD_PORT
+          value: "24224"
+        - name: PARSING_MODE
+          value: "passthrough"  # Send raw logs to Fluent Bit
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        - name: cache
+          mountPath: /cache
+          readOnly: false
+      # Fluent Bit sidecar container
+      - name: fluent-bit
+        image: fluent/fluent-bit:4.0.5-arm64
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: PROCESSOR_VERSION
+          value: "1.0"
+        - name: OPENOBSERVE_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: fluent-bit-auth
+              key: auth-token
+        ports:
+        - name: forward
+          containerPort: 24224
+          protocol: TCP
+        - name: http
+          containerPort: 2020
+          protocol: TCP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+          readOnly: true
+        - name: fluent-bit-parsers
+          mountPath: /fluent-bit/etc/custom_parsers.conf
+          subPath: custom_parsers.conf
+          readOnly: true
+        - name: fluent-bit-scripts
+          mountPath: /fluent-bit/scripts/
+          readOnly: true
+        - name: fluent-bit-storage
+          mountPath: /var/log/flb-storage/
+          readOnly: false
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+      - name: fluent-bit-parsers
+        configMap:
+          name: fluent-bit-parsers
+      - name: fluent-bit-scripts
+        configMap:
+          name: fluent-bit-config
+          items:
+          - key: extract_query_info.lua
+            path: extract_query_info.lua
+          - key: ensure_timestamp.lua
+            path: ensure_timestamp.lua
+      - name: fluent-bit-storage
+        emptyDir:
+          sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-service
+  namespace: aurora-logs
+  labels:
+    app: processor
+    component: log-processor
+spec:
+  selector:
+    app: processor
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  - name: fluent-bit-metrics
+    port: 2020
+    targetPort: 2020
+  type: ClusterIP
+---
+# Secret for Fluent Bit OpenObserve authentication
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fluent-bit-auth
+  namespace: aurora-logs
+type: Opaque
+stringData:
+  # Base64 encoded "admin@example.com:Complexpass#123"
+  auth-token: "YWRtaW5AZXhhbXBsZS5jb206Q29tcGxleHBhc3MjMTIz"

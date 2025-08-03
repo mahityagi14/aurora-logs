@@ -29,9 +29,10 @@ data:
   OPENOBSERVE_URL: "http://openobserve-service.aurora-logs.svc.cluster.local:5080"
   OPENOBSERVE_ORG: "default"
   OPENOBSERVE_STREAM: "aurora_logs"
+  # OpenObserve will use _timestamp field for log timestamps (preserving Aurora timestamps)
   
   # Kafka Configuration
-  KAFKA_BROKERS: "kafka-broker.aurora-logs.svc.cluster.local:9092"
+  KAFKA_BROKERS: "kafka-service.aurora-logs.svc.cluster.local:9092"
   KAFKA_TOPIC: "aurora-logs"
   KAFKA_PARTITION_COUNT: "10"
   KAFKA_REPLICATION_FACTOR: "1"
@@ -78,14 +79,3 @@ data:
   ENABLE_TRACE_SAMPLING: "0.1"
   ENABLE_GRACEFUL_SHUTDOWN: "true"
   SHUTDOWN_TIMEOUT_SEC: "30"
----
-# OpenObserve Credentials
-apiVersion: v1
-kind: Secret
-metadata:
-  name: openobserve-secret
-  namespace: aurora-logs
-type: Opaque
-stringData:
-  OPENOBSERVE_USER: "admin@example.com"
-  OPENOBSERVE_PASS: "Complexpass#123"

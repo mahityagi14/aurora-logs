@@ -1,98 +1,104 @@
 #!/bin/bash
 
-echo "=== Aurora Log System - Complete Cleanup ==="
-echo "This will remove all Aurora Log System resources from Kubernetes"
-echo ""
+# Aurora Log System - Complete Cleanup Script
+# This script removes all Aurora Log System components from Kubernetes
 
-# Function to wait for resource deletion
-wait_for_deletion() {
-    local resource_type=$1
-    local namespace=$2
-    local timeout=60
-    local count=0
-    
-    echo "Waiting for all $resource_type to be deleted..."
-    while [ $count -lt $timeout ]; do
-        if ! kubectl get $resource_type -n $namespace 2>/dev/null | grep -v "No resources found"; then
-            echo "✓ All $resource_type deleted"
-            return 0
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+NAMESPACE="aurora-logs"
+
+
+echo -e "${BLUE}=== Aurora Log System Cleanup ===${NC}"
+echo -e "${RED}WARNING: This will delete all Aurora Log System resources!${NC}"
+echo -n "Are you sure you want to continue? (yes/no): "
+read -r response
+
+if [ "$response" != "yes" ]; then
+    echo -e "${YELLOW}Cleanup cancelled${NC}"
+    exit 0
+fi
+
+echo -e "\n${BLUE}Starting cleanup at $(date)${NC}\n"
+
+# Deregister OpenObserve from ALB (if exists)
+echo -e "${BLUE}1. Deregistering OpenObserve from ALB...${NC}"
+ALB_ARN=$(aws elbv2 describe-load-balancers --names openobserve-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+    TG_ARN=$(aws elbv2 describe-target-groups --load-balancer-arn $ALB_ARN --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+    if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+        TARGETS=$(aws elbv2 describe-target-health --target-group-arn $TG_ARN --query 'TargetHealthDescriptions[].Target' --output json 2>/dev/null || echo "[]")
+        if [ "$TARGETS" != "[]" ]; then
+            aws elbv2 deregister-targets --target-group-arn $TG_ARN --targets "$TARGETS" 2>/dev/null || true
+            echo -e "${GREEN}✓ Targets deregistered from ALB${NC}"
         fi
-        sleep 2
-        count=$((count + 2))
-    done
-    echo "⚠ Timeout waiting for $resource_type deletion"
-    return 1
-}
-
-# Delete all deployments
-echo "1. Deleting deployments..."
-kubectl delete deployment --all -n aurora-logs --ignore-not-found=true
-
-# Delete all services
-echo "2. Deleting services..."
-kubectl delete service --all -n aurora-logs --ignore-not-found=true
-
-# Delete all configmaps
-echo "3. Deleting configmaps..."
-kubectl delete configmap --all -n aurora-logs --ignore-not-found=true
-
-# Delete all secrets
-echo "4. Deleting secrets..."
-kubectl delete secret --all -n aurora-logs --ignore-not-found=true
-
-# Delete all network policies
-echo "5. Deleting network policies..."
-kubectl delete networkpolicy --all -n aurora-logs --ignore-not-found=true
-
-# Delete all HPA
-echo "6. Deleting horizontal pod autoscalers..."
-kubectl delete hpa --all -n aurora-logs --ignore-not-found=true
-
-# Delete all PVCs
-echo "7. Deleting persistent volume claims..."
-kubectl delete pvc --all -n aurora-logs --ignore-not-found=true
-
-# Delete all jobs and cronjobs
-echo "8. Deleting jobs and cronjobs..."
-kubectl delete job --all -n aurora-logs --ignore-not-found=true
-kubectl delete cronjob --all -n aurora-logs --ignore-not-found=true
-
-# Wait for pods to terminate
-echo "9. Waiting for all pods to terminate..."
-wait_for_deletion "pods" "aurora-logs"
-
-# Delete service accounts
-echo "10. Deleting service accounts..."
-kubectl delete serviceaccount --all -n aurora-logs --ignore-not-found=true
-
-# Delete roles and rolebindings
-echo "11. Deleting RBAC resources..."
-kubectl delete role --all -n aurora-logs --ignore-not-found=true
-kubectl delete rolebinding --all -n aurora-logs --ignore-not-found=true
-
-# Finally, delete the namespace
-echo "12. Deleting namespace..."
-kubectl delete namespace aurora-logs --ignore-not-found=true
-
-# Wait for namespace deletion
-echo "Waiting for namespace deletion to complete..."
-count=0
-while kubectl get namespace aurora-logs 2>/dev/null; do
-    if [ $count -gt 120 ]; then
-        echo "⚠ Namespace deletion timeout. May need manual intervention."
-        break
     fi
-    sleep 2
-    count=$((count + 2))
-done
+else
+    echo -e "${YELLOW}OpenObserve ALB not found, skipping${NC}"
+fi
 
-echo ""
-echo "=== Cleanup Complete ==="
-echo ""
+# Delete resources in reverse order
+echo -e "\n${BLUE}2. Deleting resources in reverse order...${NC}"
 
-# Show remaining resources (should be empty)
-echo "Checking for any remaining resources:"
-kubectl get all -n aurora-logs 2>/dev/null || echo "✓ Namespace aurora-logs successfully removed"
+# Delete network policies
+kubectl delete -f 11-network-policies.yaml 2>/dev/null || true
 
-echo ""
-echo "Ready for fresh deployment!"
+# Delete autoscaling
+kubectl delete -f 10-autoscaling.yaml 2>/dev/null || true
+
+# Delete Fluent Bit config
+kubectl delete -f 09-fluent-bit-config.yaml 2>/dev/null || true
+
+# Delete applications
+kubectl delete -f 08-processor.yaml 2>/dev/null || true
+kubectl delete -f 07-discovery.yaml 2>/dev/null || true
+kubectl delete -f 06-openobserve.yaml 2>/dev/null || true
+kubectl delete -f 05-kafka.yaml 2>/dev/null || true
+kubectl delete -f 04-valkey.yaml 2>/dev/null || true
+
+# Delete storage
+kubectl delete -f 03-storage.yaml 2>/dev/null || true
+
+# Delete config and secrets
+kubectl delete -f 02-configmaps.yaml 2>/dev/null || true
+kubectl delete -f 01-secrets.yaml 2>/dev/null || true
+
+# Delete namespace and RBAC
+kubectl delete -f 00-namespace.yaml 2>/dev/null || true
+
+# Delete namespace (this will delete any remaining resources)
+echo -e "\n${BLUE}3. Deleting namespace...${NC}"
+if kubectl get namespace $NAMESPACE &> /dev/null; then
+    echo -e "Deleting namespace $NAMESPACE (this may take a moment)..."
+    kubectl delete namespace $NAMESPACE --timeout=60s
+    echo -e "${GREEN}✓ Namespace deleted${NC}"
+else
+    echo -e "${YELLOW}Namespace $NAMESPACE not found${NC}"
+fi
+
+# Optional: Delete IAM roles (commented out by default for safety)
+echo -e "\n${BLUE}4. IAM roles...${NC}"
+echo -e "${YELLOW}Note: IAM roles are preserved for safety.${NC}"
+echo -e "To delete IAM roles, run:"
+echo -e "  ./cleanup-iam.sh"
+
+# Summary
+echo -e "\n${BLUE}=== Cleanup Summary ===${NC}"
+echo -e "${GREEN}✓ All Aurora Log System resources have been removed${NC}"
+echo -e "\nCleanup completed at $(date)"
+
+# Final check
+echo -e "\n${BLUE}Verifying cleanup...${NC}"
+REMAINING=$(kubectl get all -n $NAMESPACE 2>&1 | grep -v "No resources found" | grep -v "NotFound" | wc -l || echo "0")
+if [ "$REMAINING" -eq "0" ]; then
+    echo -e "${GREEN}✓ Cleanup verified - no resources remaining${NC}"
+else
+    echo -e "${YELLOW}Warning: Some resources may still exist in namespace $NAMESPACE${NC}"
+    kubectl get all -n $NAMESPACE 2>/dev/null || true
+fi

@@ -1,3 +1,4 @@
+# AWS Configuration
 variable "region" {
   description = "AWS region"
   type        = string
@@ -25,7 +26,7 @@ variable "cost_center" {
   default     = "engineering"
 }
 
-# VPC Configuration
+# VPC Configuration (for reference - using existing VPC)
 variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
@@ -68,4 +69,179 @@ variable "additional_tags" {
   description = "Additional tags to apply to all resources"
   type        = map(string)
   default     = {}
+}
+
+# Kubernetes Deployment Variables
+variable "deploy_k8s_resources" {
+  description = "Whether to deploy Kubernetes resources"
+  type        = bool
+  default     = true
+}
+
+variable "k8s_namespace" {
+  description = "Kubernetes namespace for Aurora Log System"
+  type        = string
+  default     = "aurora-logs"
+}
+
+# Cost Optimization
+variable "enable_cost_optimization" {
+  description = "Enable cost optimization features (scale-to-zero, minimal resources)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_fargate" {
+  description = "Enable Fargate for processor slaves"
+  type        = bool
+  default     = false
+}
+
+# Autoscaling
+variable "enable_vpa" {
+  description = "Enable Vertical Pod Autoscaler"
+  type        = bool
+  default     = false
+}
+
+variable "enable_keda" {
+  description = "Enable KEDA for advanced autoscaling"
+  type        = bool
+  default     = false
+}
+
+# Network and Security
+variable "enable_network_policies" {
+  description = "Enable network policies for pod-to-pod communication"
+  type        = bool
+  default     = true
+}
+
+# Monitoring
+variable "enable_monitoring" {
+  description = "Enable monitoring namespace and resources"
+  type        = bool
+  default     = false
+}
+
+variable "enable_prometheus" {
+  description = "Enable Prometheus monitoring"
+  type        = bool
+  default     = false
+}
+
+variable "enable_otel" {
+  description = "Enable OpenTelemetry collector"
+  type        = bool
+  default     = true
+}
+
+variable "enable_grafana_agent" {
+  description = "Enable Grafana Agent for metrics and logs"
+  type        = bool
+  default     = false
+}
+
+# Application Configuration
+variable "kafka_retention_hours" {
+  description = "Kafka log retention in hours"
+  type        = number
+  default     = 24
+}
+
+variable "openobserve_retention_days" {
+  description = "OpenObserve data retention in days"
+  type        = number
+  default     = 30
+}
+
+variable "processor_max_batch_size" {
+  description = "Maximum batch size for processor"
+  type        = number
+  default     = 100
+}
+
+variable "discovery_interval_seconds" {
+  description = "Discovery interval in seconds"
+  type        = number
+  default     = 300
+}
+
+# Resource Sizing
+variable "kafka_storage_size" {
+  description = "Kafka PVC storage size"
+  type        = string
+  default     = "5Gi"
+}
+
+variable "openobserve_storage_size" {
+  description = "OpenObserve PVC storage size"
+  type        = string
+  default     = "10Gi"
+}
+
+# High Availability
+variable "kafka_replicas" {
+  description = "Number of Kafka replicas (1 for POC, 3 for production)"
+  type        = number
+  default     = 1
+}
+
+variable "openobserve_replicas" {
+  description = "Number of OpenObserve replicas"
+  type        = number
+  default     = 1
+}
+
+variable "discovery_replicas" {
+  description = "Number of Discovery replicas"
+  type        = number
+  default     = 1
+}
+
+# Image Configuration
+variable "image_pull_policy" {
+  description = "Image pull policy for containers"
+  type        = string
+  default     = "Always"
+}
+
+variable "image_registry" {
+  description = "Container image registry"
+  type        = string
+  default     = ""
+}
+
+# Feature Flags
+variable "enable_profiling" {
+  description = "Enable application profiling"
+  type        = bool
+  default     = false
+}
+
+variable "enable_caching" {
+  description = "Enable caching features"
+  type        = bool
+  default     = true
+}
+
+variable "enable_compression" {
+  description = "Enable compression for data transfer"
+  type        = bool
+  default     = true
+}
+
+# Credentials (should be provided via terraform.tfvars or environment variables)
+variable "openobserve_admin_email" {
+  description = "OpenObserve admin email"
+  type        = string
+  default     = "admin@example.com"
+  sensitive   = true
+}
+
+variable "openobserve_admin_password" {
+  description = "OpenObserve admin password"
+  type        = string
+  default     = "Complexpass#123"
+  sensitive   = true
 }

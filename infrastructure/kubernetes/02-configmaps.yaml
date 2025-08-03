@@ -1,0 +1,90 @@
+---
+# Application Configuration with Fluent Bit Integration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: aurora-logs
+data:
+  # DynamoDB Tables
+  INSTANCE_TABLE: "aurora-instance-metadata"
+  TRACKING_TABLE: "aurora-log-tracking"
+  JOBS_TABLE: "aurora-log-processing-jobs"
+  CHECKPOINT_TABLE: "aurora-log-tracking"  # Using same table for checkpoints
+  DLQ_TABLE: "aurora-log-tracking"  # Using same table for DLQ
+  
+  # S3 Configuration
+  S3_BUCKET: "company-aurora-logs-poc"
+  S3_PREFIX: "aurora-logs/"
+  
+  # Logging Configuration
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  
+  # AWS Configuration
+  AWS_REGION: "us-east-1"
+  AWS_SDK_LOAD_CONFIG: "true"
+  
+  # OpenObserve Configuration (Direct - for fallback)
+  OPENOBSERVE_URL: "http://openobserve-service.aurora-logs.svc.cluster.local:5080"
+  OPENOBSERVE_ORG: "default"
+  OPENOBSERVE_STREAM: "aurora_logs"
+  # OpenObserve will use _timestamp field for log timestamps (preserving Aurora timestamps)
+  
+  # Fluent Bit Integration
+  LOG_FORWARD_ENABLED: "true"
+  LOG_FORWARD_HOST: "localhost"
+  LOG_FORWARD_PORT: "24224"
+  PARSING_MODE: "passthrough"  # Options: passthrough, minimal, full
+  # passthrough: Send raw logs to Fluent Bit for parsing
+  # minimal: Extract basic fields, send rest to Fluent Bit
+  # full: Use processor parsing (fallback mode)
+  
+  # Kafka Configuration
+  KAFKA_BROKERS: "kafka-service.aurora-logs.svc.cluster.local:9092"
+  KAFKA_TOPIC: "aurora-logs"
+  KAFKA_PARTITION_COUNT: "10"
+  KAFKA_REPLICATION_FACTOR: "1"
+  KAFKA_COMPRESSION_TYPE: "snappy"
+  
+  # Valkey/Redis Configuration (Local K8s deployment)
+  VALKEY_URL: "redis://valkey-service.aurora-logs.svc.cluster.local:6379"
+  VALKEY_DB: "0"
+  VALKEY_TTL_SECONDS: "3600"
+  
+  # Discovery Service Configuration
+  SHARD_ID: "0"
+  TOTAL_SHARDS: "1"
+  DISCOVERY_INTERVAL_MIN: "5"
+  DISCOVERY_BATCH_SIZE: "100"
+  RDS_API_RATE_LIMIT: "10"
+  
+  # Processor Service Configuration
+  CONSUMER_GROUP: "aurora-processor-group"
+  RATE_LIMIT_PER_SEC: "100"
+  MAX_CONCURRENCY: "5"
+  BATCH_SIZE: "1000"
+  BATCH_TIMEOUT_SEC: "10"
+  S3_DOWNLOAD_TIMEOUT_SEC: "300"
+  MAX_RETRIES: "3"
+  RETRY_BACKOFF_SEC: "5"
+  CIRCUIT_BREAKER_MAX_FAILURES: "5"
+  CIRCUIT_BREAKER_TIMEOUT_SEC: "30"
+  HTTP_CONNECTION_POOL_SIZE: "20"
+  HTTP_CONNECTION_TIMEOUT_SEC: "30"
+  
+  # Performance Tuning
+  GOMAXPROCS: "2"
+  GOMEMLIMIT: "1750MiB"
+  
+  # Observability
+  OTEL_ENABLED: "true"
+  OTEL_SERVICE_NAME: "aurora-log-system"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://openobserve-service.aurora-logs.svc.cluster.local:5080/api/default/v1/traces"
+  METRICS_PORT: "9090"
+  
+  # Feature Flags
+  ENABLE_PROFILING: "false"
+  ENABLE_TRACE_SAMPLING: "0.1"
+  ENABLE_GRACEFUL_SHUTDOWN: "true"
+  SHUTDOWN_TIMEOUT_SEC: "30"
