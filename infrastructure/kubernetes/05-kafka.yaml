@@ -20,20 +20,22 @@ spec:
         app: kafka
         tier: messaging
     spec:
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      # Deploy only on aurora-node-2
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
-              - key: node.kubernetes.io/instance-type
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
                 operator: In
                 values:
-                - t3.medium  # Smallest instance that can handle Kafka
-                - t3a.medium
+                - aurora-node-2
       containers:
       - name: kafka
-        image: aurora-kafka:latest
+        image: bitnami/kafka:4.0.0
         imagePullPolicy: Always
         resources:
           requests:
@@ -43,21 +45,31 @@ spec:
             cpu: "500m"
             memory: "2Gi"
         env:
-        # KRaft mode - no Zookeeper needed
+        # Bitnami Kafka KRaft configuration
+        - name: BITNAMI_DEBUG
+          value: "true"
+        - name: KAFKA_ENABLE_KRAFT
+          value: "yes"
         - name: KAFKA_CFG_NODE_ID
           value: "1"
         - name: KAFKA_CFG_PROCESS_ROLES
-          value: "broker,controller"
+          value: "controller,broker"
         - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
           value: "CONTROLLER"
+        - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
+          value: "PLAINTEXT"
         - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
           value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
         - name: KAFKA_CFG_LISTENERS
-          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+          value: "PLAINTEXT://:9092,CONTROLLER://:9093"
         - name: KAFKA_CFG_ADVERTISED_LISTENERS
           value: "PLAINTEXT://kafka-service.aurora-logs.svc.cluster.local:9092"
         - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
-          value: "1@kafka-service.aurora-logs.svc.cluster.local:9093"
+          value: "1@localhost:9093"
+        - name: KAFKA_KRAFT_CLUSTER_ID
+          value: "MkU3OEVBNzE0QTI2Qjk2NA"
+        - name: ALLOW_PLAINTEXT_LISTENER
+          value: "yes"
         
         # Performance optimizations for single node
         - name: KAFKA_CFG_DEFAULT_REPLICATION_FACTOR
@@ -109,9 +121,7 @@ spec:
         
         volumeMounts:
         - name: kafka-data
-          mountPath: /var/lib/kafka
-        - name: kafka-config
-          mountPath: /opt/bitnami/kafka/config/kraft
+          mountPath: /bitnami/kafka
           
         livenessProbe:
           tcpSocket:
@@ -120,11 +130,8 @@ spec:
           periodSeconds: 30
           
         readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          tcpSocket:
+            port: 9092
           initialDelaySeconds: 30
           periodSeconds: 10
           
@@ -140,25 +147,30 @@ spec:
       - name: kafka-data
         persistentVolumeClaim:
           claimName: kafka-data-pvc
-      - name: kafka-config
-        emptyDir: {}
       
       # Init container to format storage
-      initContainers:
-      - name: kafka-init
-        image: aurora-kafka:latest
-        command:
-        - sh
-        - -c
-        - |
-          echo "Initializing Kafka storage..."
-          KAFKA_CLUSTER_ID="MkU3OEVBNzE0QTI2Qjk2NA"
-          /opt/bitnami/kafka/bin/kafka-storage.sh format -t $KAFKA_CLUSTER_ID -c /opt/bitnami/kafka/config/kraft/server.properties || true
-          echo "Storage initialization complete"
-        volumeMounts:
-        - name: kafka-data
-          mountPath: /var/lib/kafka
+      # No init container needed for Bitnami Kafka - it handles initialization automatically
 
+---
+# Kafka Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-service
+  namespace: aurora-logs
+  labels:
+    app: kafka
+spec:
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  - port: 9093
+    targetPort: 9093
+    name: controller
+  selector:
+    app: kafka
+  type: ClusterIP
 ---
 # ConfigMap for Kafka topic creation
 apiVersion: v1
@@ -181,36 +193,47 @@ data:
     
     echo "Creating optimized topics..."
     
-    # Aurora logs topic - optimized settings
+    # Aurora error logs topic
     /opt/bitnami/kafka/bin/kafka-topics.sh --create \
       --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-logs \
-      --partitions 20 \
+      --topic aurora-error-logs \
+      --partitions 10 \
+      --replication-factor 1 \
+      --config retention.ms=172800000 \
+      --config retention.bytes=1073741824 \
+      --config compression.type=lz4 \
+      --config segment.ms=3600000 \
+      --if-not-exists
+    
+    # Aurora slowquery logs topic
+    /opt/bitnami/kafka/bin/kafka-topics.sh --create \
+      --bootstrap-server $KAFKA_BROKER \
+      --topic aurora-slowquery-logs \
+      --partitions 10 \
       --replication-factor 1 \
       --config retention.ms=86400000 \
       --config retention.bytes=1073741824 \
       --config compression.type=lz4 \
       --config segment.ms=3600000 \
-      --config min.cleanable.dirty.ratio=0.5 \
       --if-not-exists
     
-    # Dead letter queue
+    # Dead letter queue for error logs
     /opt/bitnami/kafka/bin/kafka-topics.sh --create \
       --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-logs-dlq \
-      --partitions 5 \
+      --topic aurora-error-logs-dlq \
+      --partitions 3 \
       --replication-factor 1 \
       --config retention.ms=604800000 \
       --config compression.type=lz4 \
       --if-not-exists
     
-    # Metrics topic
+    # Dead letter queue for slowquery logs
     /opt/bitnami/kafka/bin/kafka-topics.sh --create \
       --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-metrics \
-      --partitions 5 \
+      --topic aurora-slowquery-logs-dlq \
+      --partitions 3 \
       --replication-factor 1 \
-      --config retention.ms=21600000 \
+      --config retention.ms=604800000 \
       --config compression.type=lz4 \
       --if-not-exists
     
@@ -224,7 +247,7 @@ data:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: kafka-create-topics
+  name: kafka-topics
   namespace: aurora-logs
 spec:
   template:
@@ -232,7 +255,7 @@ spec:
       restartPolicy: OnFailure
       containers:
       - name: kafka-topics
-        image: aurora-kafka:latest
+        image: bitnami/kafka:4.0.0
         command:
         - sh
         - /scripts/create-topics.sh

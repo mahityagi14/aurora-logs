@@ -178,7 +178,10 @@ resource "kubernetes_resource_quota" "aurora_logs" {
     
     # Scope to exclude DaemonSet pods from quota
     scope_selector {
-      scope_name = "NotBestEffort"
+      match_expression {
+        scope_name = "NotBestEffort"
+        operator   = "Exists"
+      }
     }
   }
 }

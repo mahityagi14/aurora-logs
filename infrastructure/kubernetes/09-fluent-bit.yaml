@@ -33,9 +33,12 @@ data:
         Buffer_Chunk_Size 1M
         Buffer_Max_Size   5M
         Tag_Prefix        aurora.
-        # Use the timestamp from the forward protocol
-        Time_Key          timestamp
-        Time_Format       %s
+
+    # Filter to only process error and slowquery logs
+    [FILTER]
+        Name              grep
+        Match             aurora.*
+        Regex             log_type (error|slowquery)
 
     # Add metadata
     [FILTER]
@@ -63,45 +66,49 @@ data:
         Preserve_Key      On
         Reserve_Data      On
 
-    # Parse Aurora general logs
-    [FILTER]
-        Name              parser
-        Match             aurora.general
-        Key_Name          message
-        Parser            aurora_general_log
-        Preserve_Key      On
-        Reserve_Data      On
-
     # Extract additional fields from slow queries
     [FILTER]
         Name              lua
         Match             aurora.slowquery
-        script            extract_query_info.lua
+        script            /fluent-bit/scripts/extract_query_info.lua
         call              extract_query_info
 
     # Add timestamp if missing
     [FILTER]
         Name              lua
         Match             aurora.*
-        script            ensure_timestamp.lua
+        script            /fluent-bit/scripts/ensure_timestamp.lua
         call              ensure_timestamp
 
-    # Output to OpenObserve
+    # Output error logs to OpenObserve
     [OUTPUT]
         Name              http
-        Match             aurora.*
+        Match             aurora.error
         Host              openobserve-service.aurora-logs.svc.cluster.local
         Port              5080
-        URI               /api/default/${log_type}_logs/_json
+        URI               /api/default/aurora_error_logs/_json
         Format            json_lines
         Header_Tag        X-Log-Tag
         Header            Authorization Basic ${OPENOBSERVE_AUTH}
         Header            Content-Type application/json
-        # Use the timestamp parsed from log, not current time
         Json_date_key     timestamp
         Json_date_format  iso8601
-        # Also include _timestamp for OpenObserve
-        Preserve_Key      On
+        Retry_Limit       3
+        storage.total_limit_size  10M
+
+    # Output slowquery logs to OpenObserve
+    [OUTPUT]
+        Name              http
+        Match             aurora.slowquery
+        Host              openobserve-service.aurora-logs.svc.cluster.local
+        Port              5080
+        URI               /api/default/aurora_slowquery_logs/_json
+        Format            json_lines
+        Header_Tag        X-Log-Tag
+        Header            Authorization Basic ${OPENOBSERVE_AUTH}
+        Header            Content-Type application/json
+        Json_date_key     timestamp
+        Json_date_format  iso8601
         Retry_Limit       3
         storage.total_limit_size  10M
 
@@ -231,15 +238,6 @@ data:
         Format            regex
         Regex             ^#\s+User@Host:\s+(?<user>\S+)\s*\[\S*\]\s*@\s*(?<host>\S+)\s*\[(?<ip_address>[\d\.]*)\]$
 
-    # Aurora General Log Parser
-    [PARSER]
-        Name              aurora_general_log
-        Format            regex
-        Regex             ^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?<thread_id>\d+)\s+(?<command>\w+)\s+(?<argument>.*)$
-        Time_Key          timestamp
-        Time_Format       %Y-%m-%d %H:%M:%S
-        Time_Keep         On
-        Types             thread_id:integer
 
     # MySQL Timestamp Parser (for SET timestamp)
     [PARSER]
@@ -248,13 +246,125 @@ data:
         Regex             ^SET timestamp=(?<unix_timestamp>\d+);$
         Types             unix_timestamp:integer
 
-    # Multiline Parser for Slow Query
-    [MULTILINE_PARSER]
-        Name              multiline_slowquery
-        Type              regex
-        Flush_timeout     2000
-        Rule              "start_state" "/^# Time:/" "query_start"
-        Rule              "query_start" "/^# User@Host:/" "user_info"
-        Rule              "user_info" "/^# Query_time:/" "query_metrics"
-        Rule              "query_metrics" "/^SET timestamp=/" "query_sql"
-        Rule              "query_sql" "/.*;$/" "query_end"
+---
+# Fluent Bit DaemonSet for aurora-node-2
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentbit
+  namespace: aurora-logs
+  labels:
+    app: fluentbit
+    component: log-parser
+spec:
+  selector:
+    matchLabels:
+      app: fluentbit
+  template:
+    metadata:
+      labels:
+        app: fluentbit
+        component: log-parser
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2020"
+        prometheus.io/path: "/api/v1/metrics/prometheus"
+    spec:
+      serviceAccountName: fluent-bit-sa
+      # Run only on aurora-node-2
+      nodeSelector:
+        eks.amazonaws.com/nodegroup: aurora-node-2
+      tolerations:
+      - key: node-role.kubernetes.io/spot
+        operator: "Exists"
+        effect: NoSchedule
+      containers:
+      - name: fluent-bit
+        image: fluent/fluent-bit:4.0.5-arm64
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        ports:
+        - name: forward
+          containerPort: 24224
+          protocol: TCP
+        - name: http
+          containerPort: 2020
+          protocol: TCP
+        env:
+        - name: OPENOBSERVE_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: fluent-bit-auth
+              key: auth-token
+        - name: PROCESSOR_VERSION
+          value: "1.0.0"
+        - name: ENVIRONMENT
+          value: "production"
+        volumeMounts:
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/fluent-bit.conf
+          subPath: fluent-bit.conf
+        - name: fluent-bit-parsers
+          mountPath: /fluent-bit/etc/custom_parsers.conf
+          subPath: custom_parsers.conf
+        - name: fluent-bit-scripts
+          mountPath: /fluent-bit/scripts/
+        - name: flb-storage
+          mountPath: /var/log/flb-storage/
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+      - name: fluent-bit-parsers
+        configMap:
+          name: fluent-bit-parsers
+      - name: fluent-bit-scripts
+        configMap:
+          name: fluent-bit-config
+          items:
+          - key: extract_query_info.lua
+            path: extract_query_info.lua
+          - key: ensure_timestamp.lua
+            path: ensure_timestamp.lua
+      - name: flb-storage
+        emptyDir: {}
+---
+# Service for Fluent Bit forward port
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentbit
+  namespace: aurora-logs
+  labels:
+    app: fluentbit
+spec:
+  type: ClusterIP
+  selector:
+    app: fluentbit
+  ports:
+  - name: forward
+    port: 24224
+    targetPort: 24224
+    protocol: TCP
+  - name: http
+    port: 2020
+    targetPort: 2020
+    protocol: TCP

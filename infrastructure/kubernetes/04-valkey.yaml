@@ -19,6 +19,9 @@ kind: Deployment
 metadata:
   name: valkey
   namespace: aurora-logs
+  labels:
+    app: valkey
+    component: cache
 spec:
   replicas: 1
   selector:
@@ -29,8 +32,16 @@ spec:
       labels:
         app: valkey
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
+      # Deploy only on aurora-node-2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: In
+                values:
+                - aurora-node-2
       containers:
       - name: valkey
         image: valkey/valkey:8.1.3

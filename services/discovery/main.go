@@ -752,7 +752,8 @@ func (d *Discovery) publishLogInfo(ctx context.Context, logInfo LogFileInfo) err
 		return err
 	}
 
-	topic := fmt.Sprintf("aurora-logs-%s", logInfo.LogType)
+	// Use proper topic names per architecture
+	topic := fmt.Sprintf("aurora-%s-logs", logInfo.LogType)
 	return d.kafkaWriter.WriteMessages(ctx, kafka.Message{
 		Topic: topic,
 		Key:   []byte(logInfo.InstanceID),

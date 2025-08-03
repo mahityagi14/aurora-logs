@@ -427,7 +427,7 @@ func main() {
 
 	kafkaReader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:        cfg.KafkaBrokers,
-		GroupTopics:    []string{"aurora-logs-error", "aurora-logs-slowquery"},
+		GroupTopics:    []string{"aurora-error-logs", "aurora-slowquery-logs"},
 		GroupID:        cfg.ConsumerGroup,
 		MinBytes:       10e3, // 10KB
 		MaxBytes:       10e6, // 10MB

@@ -89,7 +89,7 @@ resource "kubernetes_config_map" "fluent_bit_config" {
           upload_timeout       10m
           compression          gzip
           content_type         application/json
-          s3_key_format        /k8s-logs/%Y/%m/%d/$${hostname}_%{time:yyyyMMdd-HHmmss}_$${tag}.gz
+          s3_key_format        /k8s-logs/%Y/%m/%d/$${hostname}_%Y%m%d-%H%M%S_$${tag}.gz
     EOT
 
     "parsers.conf" = <<-EOT

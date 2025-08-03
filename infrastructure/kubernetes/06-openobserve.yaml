@@ -19,11 +19,19 @@ spec:
         component: log-analytics
     spec:
       serviceAccountName: openobserve-sa
-      nodeSelector:
-        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
+      # Deploy only on aurora-node-2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: In
+                values:
+                - aurora-node-2
       containers:
       - name: openobserve
-        image: openobserve/openobserve:v0.15.0-rc4
+        image: openobserve/openobserve:v0.15.0-rc4-arm64
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 5080

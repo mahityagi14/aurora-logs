@@ -71,76 +71,8 @@ variable "additional_tags" {
   default     = {}
 }
 
-# Kubernetes Deployment Variables
-variable "deploy_k8s_resources" {
-  description = "Whether to deploy Kubernetes resources"
-  type        = bool
-  default     = true
-}
-
-variable "k8s_namespace" {
-  description = "Kubernetes namespace for Aurora Log System"
-  type        = string
-  default     = "aurora-logs"
-}
-
-# Cost Optimization
-variable "enable_cost_optimization" {
-  description = "Enable cost optimization features (scale-to-zero, minimal resources)"
-  type        = bool
-  default     = true
-}
-
-variable "enable_fargate" {
-  description = "Enable Fargate for processor slaves"
-  type        = bool
-  default     = false
-}
-
-# Autoscaling
-variable "enable_vpa" {
-  description = "Enable Vertical Pod Autoscaler"
-  type        = bool
-  default     = false
-}
-
-variable "enable_keda" {
-  description = "Enable KEDA for advanced autoscaling"
-  type        = bool
-  default     = false
-}
-
-# Network and Security
-variable "enable_network_policies" {
-  description = "Enable network policies for pod-to-pod communication"
-  type        = bool
-  default     = true
-}
-
-# Monitoring
-variable "enable_monitoring" {
-  description = "Enable monitoring namespace and resources"
-  type        = bool
-  default     = false
-}
-
-variable "enable_prometheus" {
-  description = "Enable Prometheus monitoring"
-  type        = bool
-  default     = false
-}
-
-variable "enable_otel" {
-  description = "Enable OpenTelemetry collector"
-  type        = bool
-  default     = true
-}
-
-variable "enable_grafana_agent" {
-  description = "Enable Grafana Agent for metrics and logs"
-  type        = bool
-  default     = false
-}
+# Note: Kubernetes deployment variables are defined in k8s-*.tf files
+# to keep them close to their usage
 
 # Application Configuration
 variable "kafka_retention_hours" {

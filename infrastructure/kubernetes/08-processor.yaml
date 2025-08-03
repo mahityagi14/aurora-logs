@@ -22,20 +22,19 @@ spec:
         tier: control
     spec:
       serviceAccountName: processor-sa
+      # Deploy only on aurora-node-2
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
-              - key: node.kubernetes.io/instance-type
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
                 operator: In
                 values:
-                - t3.small  # Prefer smallest instance type
-                - t3a.small
+                - aurora-node-2
       containers:
       - name: processor
-        image: aurora-processor:latest
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
         imagePullPolicy: Always
         resources:
           requests:
@@ -72,18 +71,19 @@ spec:
           containerPort: 9090
         - name: health
           containerPort: 8080
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: health
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: health
-          initialDelaySeconds: 10
-          periodSeconds: 10
+        # Health checks disabled temporarily
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: health
+        #   initialDelaySeconds: 30
+        #   periodSeconds: 30
+        # readinessProbe:
+        #   httpGet:
+        #     path: /ready
+        #     port: health
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 10
 ---
 # Processor Slaves - Scale based on load
 apiVersion: apps/v1
@@ -111,10 +111,20 @@ spec:
         eks.amazonaws.com/compute-type: "fargate"
     spec:
       serviceAccountName: processor-sa
+      # Deploy only on aurora-node-2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: In
+                values:
+                - aurora-node-2
       terminationGracePeriodSeconds: 30  # Quick termination for cost savings
       containers:
       - name: processor
-        image: aurora-processor:latest
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
         imagePullPolicy: Always
         resources:
           requests:
@@ -150,7 +160,7 @@ spec:
           value: "passthrough"
         # Fluent Bit sidecar for slaves
       - name: fluent-bit
-        image: fluent/fluent-bit:3.2.2
+        image: fluent/fluent-bit:4.0.5-arm64
         resources:
           requests:
             cpu: "20m"

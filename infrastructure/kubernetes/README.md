@@ -1,115 +1,141 @@
 # Aurora Log System - Kubernetes Deployment
 
-Simplified, cost-optimized Kubernetes deployment for the Aurora Log System.
+This directory contains the Kubernetes manifests for deploying the Aurora Log System with OpenTelemetry (OTEL) support.
 
-## Quick Start
+## Architecture Overview
+
+The system consists of the following components:
+- **Discovery Service**: Discovers Aurora log files from S3
+- **Kafka**: Message broker for log processing pipeline
+- **Processor**: Processes logs (Master-Slave architecture)
+- **OpenObserve**: Log storage and analytics
+- **Valkey (Redis)**: Caching layer
+- **OTEL Collector**: Collects traces, metrics, and logs
+- **Fluent Bit**: Log parsing and forwarding
+
+## Deployment
+
+### Prerequisites
+- Kubernetes cluster with EKS
+- Node group named `aurora-node-2` 
+- kubectl configured to access the cluster
+- Container images built and pushed to ECR
+
+### Quick Deploy
 
 ```bash
-# 1. Setup IAM roles (one-time)
-./setup-iam.sh
+# Deploy everything
+./deploy-aurora.sh
 
-# 2. Deploy everything
-./deploy.sh
+# Clean up everything
+./cleanup-aurora.sh
 ```
 
-## File Structure
+### Manual Deployment Order
 
-| File | Description |
-|------|-------------|
-| **00-04: Base Infrastructure** |
-| `00-namespace.yaml` | Namespace and service accounts with IAM roles |
-| `01-secrets.yaml` | All credentials and authentication |
-| `02-configmaps.yaml` | Application configuration |
-| `03-storage.yaml` | Persistent volume claims |
-| `04-valkey.yaml` | Redis-compatible cache (optimized) |
-| **05-08: Core Services** |
-| `05-kafka.yaml` | Message broker - single node, cost-optimized |
-| `06-openobserve.yaml` | Log analytics platform (optimized) |
-| `07-discovery.yaml` | Aurora log discovery service (optimized) |
-| `08-processor.yaml` | Master-slave processor architecture |
-| **09-13: Operations** |
-| `09-fluent-bit-config.yaml` | Fluent Bit parsers and configuration |
-| `10-autoscaling.yaml` | HPA with scale-to-zero for slaves |
-| `11-network-policies.yaml` | Network security policies |
-| `12-policies.yaml` | Pod disruption budgets & resource quotas |
-| `13-monitoring.yaml` | K8s logs collection and dashboards |
+1. **Namespace and RBAC**: `00-namespace.yaml`
+2. **Secrets**: `01-secrets.yaml`
+3. **ConfigMaps**: `02-configmaps.yaml`
+4. **Storage**: `03-storage.yaml`
+5. **Valkey**: `04-valkey.yaml`
+6. **Kafka**: `05-kafka.yaml`
+7. **OpenObserve**: `06-openobserve.yaml`
+8. **Discovery**: `07-discovery.yaml`
+9. **Processor**: `08-processor.yaml`
+10. **Fluent Bit Config**: `09-fluent-bit-config.yaml`
+11. **Autoscaling**: `10-autoscaling.yaml`
+12. **Network Policies**: `11-network-policies.yaml`
+13. **Pod Policies**: `12-policies.yaml`
+14. **Monitoring**: `13-monitoring.yaml`
+15. **OTEL Collector**: `14-otel-collector.yaml`
+16. **Fluent Bit DaemonSet**: `15-fluent-bit-daemonset.yaml`
 
 ## Key Features
 
-✅ **Cost Optimized** - 73% lower costs (~$60/month vs $305/month)  
-✅ **Master-Slave Architecture** - Single master + auto-scaled slaves  
-✅ **Scale-to-Zero** - Slaves shutdown when idle  
-✅ **Fluent Bit Integration** - Flexible log parsing  
-✅ **K8s Log Collection** - Centralized logging to S3  
-✅ **Production Ready** - Health checks, monitoring, security  
-
-## Architecture
-
+### Node Affinity
+All components are configured to run exclusively on `aurora-node-2` using node affinity:
+```yaml
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: eks.amazonaws.com/nodegroup
+          operator: In
+          values:
+          - aurora-node-2
 ```
-Aurora RDS → Discovery → Kafka → Processor Master → Processor Slaves → Fluent Bit → OpenObserve
-                                        ↓                                              ↓
-                                   DynamoDB                                    S3 (K8s logs)
-```
 
-## Common Operations
+### OpenTelemetry Integration
+- OTEL Collector deployed for trace, metric, and log collection
+- All services configured with OTEL environment variables
+- Traces exported to OpenObserve
+- Metrics scraped via Prometheus protocol
+
+### Cost Optimization
+- Minimal resource requests/limits
+- Single-node Kafka deployment
+- Scale-to-zero processor slaves
+- Efficient storage usage
+
+## Access Services
 
 ```bash
-# Check status
-make status
-
-# View logs
-make logs        # Processor master logs
-make logs-k8s    # K8s log collector
-
-# Monitor costs
-make cost
-
-# Scale manually
-kubectl scale deployment/processor-slaves --replicas=3 -n aurora-logs
-
-# Setup Fargate (optional)
-make fargate
-```
-
-## Access OpenObserve
-
-```bash
-# Port forward
+# OpenObserve UI
 kubectl port-forward -n aurora-logs svc/openobserve-service 5080:5080
+# Access at http://localhost:5080
+# Credentials: admin@example.com / Complexpass#123
 
-# Access UI
-http://localhost:5080
-Username: admin@example.com
-Password: Complexpass#123
+# OTEL Collector (for sending traces)
+kubectl port-forward -n aurora-logs svc/otel-collector 4317:4317
+
+# Kafka
+kubectl port-forward -n aurora-logs svc/kafka-service 9092:9092
 ```
 
-## Cost Breakdown
+## Monitoring
 
-| Component | Resources | Est. Cost/Month |
-|-----------|-----------|-----------------|
-| Discovery | 50m CPU, 128Mi RAM | ~$3 |
-| Processor Master | 100m CPU, 256Mi RAM | ~$5 |
-| Processor Slaves | 0-10 pods (scale-to-zero) | $0-15 |
-| Kafka | 200m CPU, 1Gi RAM | ~$10 |
-| OpenObserve | 500m CPU, 2Gi RAM | ~$20 |
-| Valkey | 50m CPU, 128Mi RAM | ~$3 |
-| Storage | 15Gi total | ~$2 |
-| K8s Logs S3 | ~50GB/month | ~$1 |
-| **Total (idle)** | | **~$44** |
-| **Total (active)** | | **~$60-80** |
-
-## Documentation
-
-- [Cost Optimization Guide](docs/COST-OPTIMIZATION-SUMMARY.md)
-- [Production Readiness](docs/PRODUCTION-READINESS.md)
-- [Deployment Guide](docs/DEPLOYMENT-GUIDE.md)
-
-## Cleanup
-
+Check deployment status:
 ```bash
-# Remove all resources
-make clean
-
-# Remove IAM roles
-make clean-iam
+kubectl get all -n aurora-logs
+kubectl get pods -n aurora-logs -o wide
 ```
+
+View logs:
+```bash
+kubectl logs -n aurora-logs deployment/processor-master
+kubectl logs -n aurora-logs deployment/otel-collector
+```
+
+## Troubleshooting
+
+1. **Pods not scheduling on aurora-node-2**:
+   - Verify node exists: `kubectl get nodes -l eks.amazonaws.com/nodegroup=aurora-node-2`
+   - Check pod events: `kubectl describe pod <pod-name> -n aurora-logs`
+
+2. **OTEL Collector not receiving data**:
+   - Check service endpoint: `kubectl get svc otel-collector -n aurora-logs`
+   - Verify OTEL environment variables in pods
+   - Check collector logs: `kubectl logs deployment/otel-collector -n aurora-logs`
+
+3. **Fluent Bit issues**:
+   - Check DaemonSet status: `kubectl get ds fluent-bit -n aurora-logs`
+   - View Fluent Bit logs: `kubectl logs ds/fluent-bit -n aurora-logs`
+
+## Configuration
+
+### OTEL Configuration
+Located in `14-otel-collector.yaml`:
+- Receivers: OTLP (gRPC/HTTP), Prometheus
+- Processors: Batch, Memory Limiter, Resource, K8s Attributes
+- Exporters: OpenObserve (traces, metrics, logs)
+
+### Fluent Bit Configuration
+Located in `09-fluent-bit-config.yaml`:
+- Input: Forward protocol on port 24224
+- Parsers: Aurora error, slow query, and general logs
+- Output: OpenObserve HTTP endpoint
+
+## Archive Directory
+
+The `archive/` directory contains previous versions and experimental configurations for reference.

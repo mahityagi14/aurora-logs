@@ -19,10 +19,17 @@ spec:
         component: log-collector
     spec:
       serviceAccountName: discovery-sa
-      nodeSelector:
-        kubernetes.io/hostname: ip-172-16-30-241.ec2.internal  # aurora-node-2
       dnsPolicy: ClusterFirst
+      # Deploy only on aurora-node-2
       affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: In
+                values:
+                - aurora-node-2
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100

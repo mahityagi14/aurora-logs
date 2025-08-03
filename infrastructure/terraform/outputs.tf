@@ -1,22 +1,13 @@
 # Terraform outputs for Aurora Log System
+# Note: Some outputs are already defined in main.tf and k8s-deployment.tf
 
-# VPC and Network Information
-output "vpc_id" {
-  description = "ID of the VPC being used"
-  value       = data.aws_vpc.existing.id
-}
-
+# VPC and Network Information (additional)
 output "vpc_cidr" {
   description = "CIDR block of the VPC"
   value       = data.aws_vpc.existing.cidr_block
 }
 
-# EKS Cluster Information
-output "eks_cluster_name" {
-  description = "Name of the EKS cluster"
-  value       = data.aws_eks_cluster.existing.name
-}
-
+# EKS Cluster Information (additional)
 output "eks_cluster_endpoint" {
   description = "Endpoint for EKS cluster"
   value       = data.aws_eks_cluster.existing.endpoint
@@ -27,42 +18,22 @@ output "eks_cluster_version" {
   value       = data.aws_eks_cluster.existing.version
 }
 
-# RDS Aurora Information
-output "rds_cluster_endpoint" {
-  description = "Writer endpoint for Aurora RDS cluster"
-  value       = data.aws_rds_cluster.existing.endpoint
-}
-
+# RDS Aurora Information (additional)
 output "rds_cluster_reader_endpoint" {
   description = "Reader endpoint for Aurora RDS cluster"
   value       = data.aws_rds_cluster.existing.reader_endpoint
 }
 
-# ElastiCache Information
-output "elasticache_endpoint" {
-  description = "Primary endpoint for ElastiCache Valkey cluster"
-  value       = module.elasticache.primary_endpoint_address
-}
-
+# ElastiCache Information (additional)
 output "elasticache_port" {
   description = "Port for ElastiCache Valkey cluster"
   value       = module.elasticache.port
 }
 
-# S3 Buckets
-output "s3_aurora_logs_bucket" {
-  description = "S3 bucket for Aurora logs"
-  value       = data.aws_s3_bucket.existing_aurora_logs.id
-}
-
+# S3 Buckets (additional)
 output "s3_aurora_logs_bucket_arn" {
   description = "ARN of S3 bucket for Aurora logs"
   value       = data.aws_s3_bucket.existing_aurora_logs.arn
-}
-
-output "s3_k8s_logs_bucket" {
-  description = "S3 bucket for Kubernetes logs"
-  value       = aws_s3_bucket.k8s_logs.id
 }
 
 output "s3_k8s_logs_bucket_arn" {
@@ -70,16 +41,7 @@ output "s3_k8s_logs_bucket_arn" {
   value       = aws_s3_bucket.k8s_logs.arn
 }
 
-# DynamoDB Tables
-output "dynamodb_tables" {
-  description = "DynamoDB table names"
-  value = {
-    instance_metadata = data.aws_dynamodb_table.existing_metadata.name
-    tracking         = data.aws_dynamodb_table.existing_tracking.name
-    jobs            = data.aws_dynamodb_table.existing_jobs.name
-  }
-}
-
+# DynamoDB Tables (additional)
 output "dynamodb_table_arns" {
   description = "DynamoDB table ARNs"
   value = {
@@ -89,44 +51,16 @@ output "dynamodb_table_arns" {
   }
 }
 
-# ECR Repository
-output "ecr_repository_url" {
-  description = "URL of the ECR repository"
-  value       = data.aws_ecr_repository.existing_aurora_log_system.repository_url
-}
-
-# Kubernetes Resources
-output "k8s_namespace" {
-  description = "Kubernetes namespace for Aurora Log System"
-  value       = var.deploy_k8s_resources ? kubernetes_namespace.aurora_logs[0].metadata[0].name : "Not deployed"
-}
-
+# Kubernetes Resources (additional)
 output "k8s_deployment_status" {
   description = "Status of Kubernetes deployment"
   value       = var.deploy_k8s_resources ? "Kubernetes resources deployed" : "Kubernetes deployment skipped"
 }
 
-# Access Information
-output "openobserve_access" {
-  description = "Commands to access OpenObserve UI"
-  value = var.deploy_k8s_resources ? {
-    port_forward_command = "kubectl port-forward -n ${var.k8s_namespace} svc/openobserve-service 5080:5080"
-    url                  = "http://localhost:5080"
-    username             = var.openobserve_admin_email
-    password             = "[Sensitive - check terraform.tfvars or environment variable]"
-  } : null
-  sensitive = true
-}
-
+# Access Information (additional)
 output "kafka_access" {
   description = "Kafka broker endpoint within cluster"
   value       = var.deploy_k8s_resources ? "kafka-service.${var.k8s_namespace}.svc.cluster.local:9092" : "Not deployed"
-}
-
-# kubectl Configuration
-output "configure_kubectl" {
-  description = "Command to configure kubectl for the EKS cluster"
-  value       = "aws eks update-kubeconfig --region ${var.region} --name ${data.aws_eks_cluster.existing.name}"
 }
 
 # Deployment Commands
