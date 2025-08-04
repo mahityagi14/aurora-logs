@@ -14,8 +14,9 @@ kind: ServiceAccount
 metadata:
   name: discovery-sa
   namespace: aurora-logs
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-discovery-role
+  labels:
+    app: discovery
+    # EKS Pod Identity will be configured separately via AWS API
 ---
 # Service Account for Processor
 apiVersion: v1
@@ -23,8 +24,9 @@ kind: ServiceAccount
 metadata:
   name: processor-sa
   namespace: aurora-logs
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-processor-role
+  labels:
+    app: processor
+    # EKS Pod Identity will be configured separately via AWS API
 ---
 # Service Account for OpenObserve
 apiVersion: v1
@@ -32,8 +34,9 @@ kind: ServiceAccount
 metadata:
   name: openobserve-sa
   namespace: aurora-logs
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::072006186126:role/aurora-logs-poc-openobserve-role
+  labels:
+    app: openobserve
+    # EKS Pod Identity will be configured separately via AWS API
 ---
 # Service Account for OTEL Collector
 apiVersion: v1

@@ -16,18 +16,17 @@ spec:
     matchLabels:
       app: discovery
 ---
-# PodDisruptionBudget for Processor Master
+# PodDisruptionBudget for Processor
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: processor-master-pdb
+  name: processor-pdb
   namespace: aurora-logs
 spec:
   minAvailable: 1
   selector:
     matchLabels:
       app: processor
-      role: master
 ---
 # PodDisruptionBudget for Kafka
 apiVersion: policy/v1

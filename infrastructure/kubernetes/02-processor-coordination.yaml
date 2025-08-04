@@ -1,0 +1,8 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: processor-coordination
+  namespace: aurora-logs
+data:
+  # Empty configmap for coordination

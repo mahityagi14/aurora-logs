@@ -1,16 +1,16 @@
 ---
-# HPA for Processor Slaves
+# Simple HPA for Processor
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: processor-slaves-hpa
+  name: processor-hpa
   namespace: aurora-logs
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: processor-slaves
-  minReplicas: 1   # Minimum 1 replica (HPA doesn't support 0)
+    name: processor
+  minReplicas: 1   # Minimum 1 replica
   maxReplicas: 10
   metrics:
   - type: Resource
@@ -70,8 +70,8 @@ spec:
         value: 1
         periodSeconds: 300
     scaleUp:
-      stabilizationWindowSeconds: 180
+      stabilizationWindowSeconds: 60
       policies:
       - type: Pods
         value: 1
-        periodSeconds: 180
+        periodSeconds: 60

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,7 +27,6 @@ import (
 	dynamoTypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/segmentio/kafka-go"
-	"net"
 )
 
 // Configuration helpers
@@ -1171,6 +1171,12 @@ func (bp *BatchProcessor) sendBatch(ctx context.Context, logMsg LogMessage, batc
 	req.SetBasicAuth(bp.config.OpenObserveUser, bp.config.OpenObservePass)
 	req.Header.Set("Content-Type", "application/json")
 	
+	slog.Info("Sending batch to OpenObserve", 
+		"url", url, 
+		"stream", streamName, 
+		"batch_size", len(batch),
+		"data_size", len(jsonData))
+	
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
@@ -1182,8 +1188,19 @@ func (bp *BatchProcessor) sendBatch(ctx context.Context, logMsg LogMessage, batc
 	}()
 	
 	if resp.StatusCode >= 400 {
+		// Read error body for debugging
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		slog.Error("Failed to send batch to OpenObserve", 
+			"status", resp.StatusCode,
+			"body", string(bodyBytes),
+			"stream", streamName)
 		return fmt.Errorf("HTTP error: %d", resp.StatusCode)
 	}
+	
+	slog.Info("Successfully sent batch to OpenObserve", 
+		"status", resp.StatusCode,
+		"stream", streamName,
+		"entries", len(batch))
 	
 	return nil
 }
@@ -1205,11 +1222,14 @@ func parseLogTimestamp(timestamp string, logType string) time.Time {
 	
 	switch logType {
 	case "error":
-		// MySQL error log format: 2025-08-02 12:34:56
+		// Aurora MySQL error log formats
 		layouts = []string{
-			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05.000000Z", // Aurora format with microseconds
+			"2006-01-02T15:04:05.999999Z", // 6 digits after decimal
 			"2006-01-02T15:04:05Z",
-			"2006-01-02T15:04:05.000Z",
+			"2006-01-02 15:04:05",
+			time.RFC3339,
+			time.RFC3339Nano,
 		}
 	case "slowquery":
 		// MySQL slow query format variations
@@ -1247,8 +1267,60 @@ func parseErrorLog(line string) ParsedLogEntry {
 		return nil
 	}
 	
-	// Aurora MySQL error log format: YYYY-MM-DD HH:MM:SS [Note/Warning/ERROR] message
-	// Example: 2025-08-02 12:34:56 140234567890 [ERROR] Access denied for user...
+	// Aurora MySQL error log format: YYYY-MM-DDTHH:MM:SS.SSSSSSZ thread_id [Level] [MY-XXXXXX] [Component] message
+	// Example: 2025-08-04T05:30:23.573848Z 58699 [Note] [MY-010914] [Server] Got packets out of order
+	
+	// First try ISO format with Z suffix (Aurora format)
+	if len(line) > 27 && line[10] == 'T' && (line[26] == 'Z' || line[27] == 'Z') {
+		// Find the Z to get timestamp end
+		zIndex := strings.Index(line, "Z")
+		if zIndex > 0 && zIndex < 30 {
+			timestamp := line[:zIndex+1]
+			remainder := strings.TrimSpace(line[zIndex+1:])
+			
+			// Extract thread ID and level
+			parts := strings.Fields(remainder)
+			threadID := ""
+			level := "INFO"
+			message := remainder
+			
+			if len(parts) >= 2 {
+				threadID = parts[0]
+				
+				// Find the level in brackets
+				for i, part := range parts[1:] {
+					if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+						levelStr := strings.Trim(part, "[]")
+						switch levelStr {
+						case "ERROR", "Error":
+							level = "ERROR"
+						case "Warning", "WARN":
+							level = "WARNING"
+						case "Note", "INFO":
+							level = "INFO"
+						default:
+							continue
+						}
+						// Get message after the level
+						if i+2 < len(parts) {
+							message = strings.Join(parts[i+2:], " ")
+						}
+						break
+					}
+				}
+			}
+			
+			return ParsedLogEntry{
+				"timestamp": timestamp,
+				"thread_id": threadID,
+				"level":     level,
+				"message":   message,
+				"raw_line":  line,
+			}
+		}
+	}
+	
+	// Fallback to old format: YYYY-MM-DD HH:MM:SS [Note/Warning/ERROR] message
 	if len(line) > 19 && line[4] == '-' && line[7] == '-' && line[10] == ' ' && line[13] == ':' && line[16] == ':' {
 		timestamp := line[:19]
 		remainder := line[19:]

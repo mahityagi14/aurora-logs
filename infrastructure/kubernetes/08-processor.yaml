@@ -1,27 +1,25 @@
 ---
-# Processor Master - Always running, handles coordination
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: processor-master
+  name: processor
   namespace: aurora-logs
   labels:
     app: processor
-    tier: master
+    component: log-processor
 spec:
-  replicas: 1  # Always exactly 1 master
+  replicas: 1  # Start with 1, HPA will scale as needed
   selector:
     matchLabels:
       app: processor
-      role: master
   template:
     metadata:
       labels:
         app: processor
-        role: master
-        tier: control
+        component: log-processor
     spec:
       serviceAccountName: processor-sa
+      dnsPolicy: ClusterFirst
       # Deploy only on aurora-node-2
       affinity:
         nodeAffinity:
@@ -32,142 +30,121 @@ spec:
                 operator: In
                 values:
                 - aurora-node-2
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - processor
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: processor
         image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
         imagePullPolicy: Always
-        resources:
-          requests:
-            cpu: "100m"     # Minimal for master
-            memory: "256Mi"
-          limits:
-            cpu: "300m"
-            memory: "512Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
         envFrom:
         - configMapRef:
             name: app-config
         - secretRef:
             name: app-secrets
         env:
-        # Master-specific configuration
-        - name: PROCESSOR_ROLE
-          value: "master"
-        - name: PROCESSOR_MODE
-          value: "coordinator"
-        - name: CONSUMER_GROUP
-          value: "processor-master"
-        - name: KAFKA_PARTITION_ASSIGNMENT
-          value: "static"  # Master handles partition assignment
-        - name: MAX_BATCH_SIZE
-          value: "10"      # Small batches for master
-        - name: GOMAXPROCS
-          value: "1"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        # Fluent Bit TCP forward configuration
         - name: LOG_FORWARD_ENABLED
           value: "true"
+        - name: LOG_FORWARD_HOST
+          value: "localhost"  # Sidecar container
+        - name: LOG_FORWARD_PORT
+          value: "24224"
         - name: PARSING_MODE
-          value: "passthrough"
+          value: "passthrough"  # Let Fluent Bit do parsing
         ports:
         - name: metrics
           containerPort: 9090
+          protocol: TCP
         - name: health
           containerPort: 8080
-        # Health checks disabled temporarily
-        # livenessProbe:
-        #   httpGet:
-        #     path: /healthz
-        #     port: health
-        #   initialDelaySeconds: 30
-        #   periodSeconds: 30
-        # readinessProbe:
-        #   httpGet:
-        #     path: /ready
-        #     port: health
-        #   initialDelaySeconds: 10
-        #   periodSeconds: 10
----
-# Processor Slaves - Scale based on load
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: processor-slaves
-  namespace: aurora-logs
-  labels:
-    app: processor
-    tier: slave
-spec:
-  replicas: 0  # Start with 0, scale based on load
-  selector:
-    matchLabels:
-      app: processor
-      role: slave
-  template:
-    metadata:
-      labels:
-        app: processor
-        role: slave
-        tier: worker
-      annotations:
-        # Fargate profile selector
-        eks.amazonaws.com/compute-type: "fargate"
-    spec:
-      serviceAccountName: processor-sa
-      # Deploy only on aurora-node-2
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
-      terminationGracePeriodSeconds: 30  # Quick termination for cost savings
-      containers:
-      - name: processor
-        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
-        imagePullPolicy: Always
+          protocol: TCP
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
-            cpu: "50m"      # Minimal for slaves
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: health
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      # Fluent Bit sidecar for log parsing
+      - name: fluent-bit
+        image: fluent/fluent-bit:4.0.5-arm64
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: "50m"
             memory: "128Mi"
           limits:
             cpu: "200m"
             memory: "256Mi"
-        envFrom:
-        - configMapRef:
-            name: app-config
-        - secretRef:
-            name: app-secrets
-        env:
-        # Slave-specific configuration
-        - name: PROCESSOR_ROLE
-          value: "slave"
-        - name: PROCESSOR_MODE
-          value: "worker"
-        - name: CONSUMER_GROUP
-          value: "processor-slaves"
-        - name: KAFKA_PARTITION_ASSIGNMENT
-          value: "dynamic"  # Slaves get assigned partitions
-        - name: MAX_BATCH_SIZE
-          value: "100"      # Larger batches for efficiency
-        - name: PROCESSING_TIMEOUT
-          value: "300s"     # 5 minute timeout
-        - name: GOMAXPROCS
-          value: "1"
-        - name: LOG_FORWARD_ENABLED
-          value: "true"
-        - name: PARSING_MODE
-          value: "passthrough"
-        # Fluent Bit sidecar for slaves
-      - name: fluent-bit
-        image: fluent/fluent-bit:4.0.5-arm64
-        resources:
-          requests:
-            cpu: "20m"
-            memory: "64Mi"
-          limits:
-            cpu: "100m"
-            memory: "128Mi"
         ports:
         - name: forward
           containerPort: 24224
@@ -175,18 +152,22 @@ spec:
         volumeMounts:
         - name: fluent-bit-config
           mountPath: /fluent-bit/etc/
-        env:
-        - name: OPENOBSERVE_AUTH
-          valueFrom:
-            secretKeyRef:
-              name: fluent-bit-auth
-              key: auth-token
+        - name: fluent-bit-parsers
+          mountPath: /fluent-bit/etc/parsers.conf
+          subPath: parsers.conf
+        - name: tmp
+          mountPath: /tmp
       volumes:
+      - name: tmp
+        emptyDir: {}
       - name: fluent-bit-config
         configMap:
           name: fluent-bit-config
+      - name: fluent-bit-parsers
+        configMap:
+          name: fluent-bit-parsers
 ---
-# Service for processor metrics aggregation
+# Service for processor metrics
 apiVersion: v1
 kind: Service
 metadata:
@@ -194,35 +175,13 @@ metadata:
   namespace: aurora-logs
   labels:
     app: processor
+    component: metrics
 spec:
+  type: ClusterIP
   selector:
     app: processor
   ports:
   - name: metrics
     port: 9090
-    targetPort: 9090
-  type: ClusterIP
----
-# ConfigMap for master-slave coordination
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: processor-coordination
-  namespace: aurora-logs
-data:
-  # Coordination settings
-  COORDINATION_ENABLED: "true"
-  MASTER_ENDPOINT: "processor-master.aurora-logs.svc.cluster.local:8080"
-  SLAVE_REGISTRATION_INTERVAL: "30s"
-  PARTITION_REBALANCE_INTERVAL: "300s"
-  
-  # Load distribution
-  MIN_PARTITIONS_PER_SLAVE: "1"
-  MAX_PARTITIONS_PER_SLAVE: "3"
-  LOAD_THRESHOLD_SCALE_UP: "1000"    # Messages behind
-  LOAD_THRESHOLD_SCALE_DOWN: "100"   # Messages behind
-  
-  # Cost optimization
-  IDLE_TIMEOUT: "300s"               # 5 minutes idle before scale down
-  BATCH_WAIT_TIMEOUT: "30s"          # Wait for batch to fill
-  PROCESSING_CONCURRENCY: "2"        # Concurrent processing per slave
+    targetPort: metrics
+    protocol: TCP

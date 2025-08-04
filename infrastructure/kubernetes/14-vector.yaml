@@ -1,0 +1,323 @@
+---
+# ConfigMap for Vector configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vector-config
+  namespace: aurora-logs
+data:
+  vector.toml: |
+    # Vector configuration for Aurora Log System
+    
+    # Data directory
+    data_dir = "/vector-data-dir"
+    
+    # API for health checks
+    [api]
+    enabled = true
+    address = "0.0.0.0:8686"
+    
+    # Sources - Collect logs and metrics
+    
+    # 1. Kubernetes logs from all pods
+    [sources.kubernetes_logs]
+    type = "kubernetes_logs"
+    namespace_annotation_fields.pod_namespace = "kubernetes.namespace_name"
+    node_annotation_fields.node_name = "kubernetes.node_name"
+    pod_annotation_fields.pod_annotations = "kubernetes.pod_annotations"
+    pod_annotation_fields.pod_labels = "kubernetes.pod_labels"
+    pod_annotation_fields.pod_name = "kubernetes.pod_name"
+    
+    # 2. Prometheus metrics from pods
+    [sources.prometheus_scrape]
+    type = "prometheus_scrape"
+    endpoints = [
+      "http://discovery-service.aurora-logs.svc.cluster.local:9090/metrics",
+      "http://processor-metrics.aurora-logs.svc.cluster.local:9090/metrics",
+      "http://kafka-service.aurora-logs.svc.cluster.local:9092/metrics",
+      "http://openobserve-service.aurora-logs.svc.cluster.local:5080/metrics",
+      "http://valkey-service.aurora-logs.svc.cluster.local:9121/metrics"
+    ]
+    scrape_interval_secs = 30
+    
+    # 3. Host metrics
+    [sources.host_metrics]
+    type = "host_metrics"
+    collectors = ["cpu", "memory", "disk", "network"]
+    
+    # Transforms - Process and enrich data
+    
+    # Filter only aurora-logs namespace
+    [transforms.filter_namespace]
+    type = "filter"
+    inputs = ["kubernetes_logs"]
+    condition = '''
+      .kubernetes.namespace_name == "aurora-logs"
+    '''
+    
+    # Parse JSON logs
+    [transforms.parse_json]
+    type = "remap"
+    inputs = ["filter_namespace"]
+    source = '''
+      parsed, err = parse_json(.message)
+      if err == null {
+        . = merge(., parsed)
+      }
+    '''
+    
+    # Add timestamps in OpenObserve format
+    [transforms.add_timestamp]
+    type = "remap"
+    inputs = ["parse_json"]
+    source = '''
+      # Convert timestamp to milliseconds for OpenObserve
+      if exists(.timestamp) {
+        timestamp_ms = to_unix_timestamp(to_timestamp!(.timestamp), unit: "milliseconds")
+        ._timestamp = timestamp_ms
+      } else {
+        ._timestamp = to_unix_timestamp(now(), unit: "milliseconds")
+      }
+      
+      # Also add @timestamp for compatibility
+      .@timestamp = format_timestamp!(now(), format: "%Y-%m-%dT%H:%M:%SZ")
+    '''
+    
+    # Route logs by type
+    [transforms.route_logs]
+    type = "route"
+    inputs = ["add_timestamp"]
+    
+    [transforms.route_logs.route.aurora_logs]
+    condition = '.kubernetes.pod_labels."app" == "processor" || .kubernetes.pod_labels."app" == "discovery"'
+    
+    [transforms.route_logs.route.system_logs]
+    condition = 'true'  # Catch all others
+    
+    # Sinks - Send data to OpenObserve
+    
+    # 1. Aurora application logs
+    [sinks.openobserve_aurora_logs]
+    type = "http"
+    inputs = ["route_logs.aurora_logs"]
+    uri = "http://openobserve-service.aurora-logs.svc.cluster.local:5080/api/default/aurora_logs/_json"
+    method = "post"
+    encoding.codec = "json"
+    auth.strategy = "basic"
+    auth.user = "${OPENOBSERVE_USER}"
+    auth.password = "${OPENOBSERVE_PASS}"
+    batch.max_bytes = 1048576  # 1MB
+    batch.timeout_secs = 5
+    healthcheck.enabled = true
+    
+    # 2. System logs
+    [sinks.openobserve_system_logs]
+    type = "http"
+    inputs = ["route_logs.system_logs"]
+    uri = "http://openobserve-service.aurora-logs.svc.cluster.local:5080/api/default/k8s_logs/_json"
+    method = "post"
+    encoding.codec = "json"
+    auth.strategy = "basic"
+    auth.user = "${OPENOBSERVE_USER}"
+    auth.password = "${OPENOBSERVE_PASS}"
+    batch.max_bytes = 1048576  # 1MB
+    batch.timeout_secs = 5
+    healthcheck.enabled = true
+    
+    # 3. Metrics to OpenObserve via Prometheus Remote Write
+    [sinks.openobserve_metrics]
+    type = "prometheus_remote_write"
+    inputs = ["prometheus_scrape", "host_metrics"]
+    endpoint = "http://openobserve-service.aurora-logs.svc.cluster.local:5080/api/default/prometheus/api/v1/write"
+    auth.strategy = "basic"
+    auth.user = "${OPENOBSERVE_USER}"
+    auth.password = "${OPENOBSERVE_PASS}"
+    healthcheck.enabled = true
+---
+# ServiceAccount for Vector
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vector-sa
+  namespace: aurora-logs
+---
+# ClusterRole for Vector
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vector
+rules:
+- apiGroups: [""]
+  resources:
+  - namespaces
+  - nodes
+  - pods
+  - services
+  - endpoints
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources:
+  - deployments
+  - replicasets
+  - daemonsets
+  - statefulsets
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources:
+  - jobs
+  - cronjobs
+  verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding for Vector
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vector
+subjects:
+- kind: ServiceAccount
+  name: vector-sa
+  namespace: aurora-logs
+---
+# DaemonSet for Vector (replaces Fluent Bit if successful)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vector
+  namespace: aurora-logs
+  labels:
+    app: vector
+    component: log-metrics-collector
+spec:
+  selector:
+    matchLabels:
+      app: vector
+  template:
+    metadata:
+      labels:
+        app: vector
+        component: log-metrics-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: vector-sa
+      nodeSelector:
+        eks.amazonaws.com/nodegroup: aurora-node-2
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+      - name: vector
+        image: timberio/vector:0.48.0-debian
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+          readOnlyRootFilesystem: false
+        env:
+        - name: VECTOR_SELF_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: VECTOR_SELF_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: VECTOR_SELF_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OPENOBSERVE_USER
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-email
+        - name: OPENOBSERVE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: openobserve-credentials
+              key: admin-password
+        ports:
+        - name: api
+          containerPort: 8686
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /etc/vector
+          readOnly: true
+        - name: data
+          mountPath: /vector-data-dir
+        - name: var-log
+          mountPath: /var/log
+          readOnly: true
+        - name: var-lib
+          mountPath: /var/lib
+          readOnly: true
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: proc
+          mountPath: /proc
+          readOnly: true
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: vector-config
+      - name: data
+        emptyDir: {}
+      - name: var-log
+        hostPath:
+          path: /var/log
+      - name: var-lib
+        hostPath:
+          path: /var/lib
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: proc
+        hostPath:
+          path: /proc
+---
+# Service for Vector metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: vector-metrics
+  namespace: aurora-logs
+  labels:
+    app: vector
+spec:
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: vector
+  type: ClusterIP

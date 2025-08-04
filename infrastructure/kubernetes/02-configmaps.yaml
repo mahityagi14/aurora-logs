@@ -34,10 +34,10 @@ data:
   # OpenObserve will use _timestamp field for log timestamps (preserving Aurora timestamps)
   
   # Fluent Bit Integration
-  LOG_FORWARD_ENABLED: "true"
+  LOG_FORWARD_ENABLED: "false"
   LOG_FORWARD_HOST: "fluentbit.aurora-logs.svc.cluster.local"
   LOG_FORWARD_PORT: "24224"
-  PARSING_MODE: "passthrough"  # Options: passthrough, minimal, full
+  PARSING_MODE: "full"  # Options: passthrough, minimal, full
   # passthrough: Send raw logs to Fluent Bit for parsing
   # minimal: Extract basic fields, send rest to Fluent Bit
   # full: Use processor parsing (fallback mode)

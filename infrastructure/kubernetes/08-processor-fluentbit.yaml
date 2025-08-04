@@ -1,0 +1,105 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: aurora-logs
+  labels:
+    app: processor
+    component: log-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+        component: log-processor
+    spec:
+      serviceAccountName: processor-sa
+      dnsPolicy: ClusterFirst
+      # Deploy only on aurora-node-2
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: eks.amazonaws.com/nodegroup
+                operator: In
+                values:
+                - aurora-node-2
+      containers:
+      - name: processor
+        image: 072006186126.dkr.ecr.us-east-1.amazonaws.com/aurora-log-system:processor-latest
+        imagePullPolicy: Always
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        env:
+        # Enable Fluent Bit forwarding
+        - name: LOG_FORWARD_ENABLED
+          value: "false"
+        - name: LOG_FORWARD_HOST
+          value: "fluentbit.aurora-logs.svc.cluster.local"
+        - name: LOG_FORWARD_PORT
+          value: "24224"
+        - name: PARSING_MODE
+          value: "full"  # Parse logs in processor
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        - name: health
+          containerPort: 8080
+          protocol: TCP
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        # Health checks disabled temporarily
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: health
+        #   periodSeconds: 10
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
+        # readinessProbe:
+        #   httpGet:
+        #     path: /ready
+        #     port: health
+        #   periodSeconds: 5
+        #   timeoutSeconds: 3
+        #   failureThreshold: 3
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+# Service for processor metrics (removing since no metrics collection)
+apiVersion: v1
+kind: Service
+metadata:
+  name: processor-metrics
+  namespace: aurora-logs
+  labels:
+    app: processor
+    component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: processor
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP

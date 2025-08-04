@@ -17,7 +17,6 @@ help:
 	@echo "  make cost           - Show cost optimization status"
 	@echo "  make setup-iam      - Setup IAM roles (one-time)"
 	@echo "  make clean-iam      - Remove IAM roles"
-	@echo "  make fargate        - Setup Fargate profiles"
 
 # Setup IAM roles
 setup-iam:
@@ -44,11 +43,11 @@ status:
 
 # Show processor logs
 logs:
-	kubectl logs -f deployment/processor-master -n aurora-logs -c processor
+	kubectl logs -f deployment/processor -n aurora-logs -c processor
 
 # Show Fluent Bit logs  
 logs-fb:
-	kubectl logs -f deployment/processor-slaves -n aurora-logs -c fluent-bit
+	kubectl logs -f deployment/processor -n aurora-logs -c fluent-bit
 
 # Show K8s log collector
 logs-k8s:
@@ -63,8 +62,6 @@ cost:
 	@kubectl get hpa -n aurora-logs
 	@echo "\n--- Resource Usage ---"
 	@kubectl top pods -n aurora-logs 2>/dev/null || echo "Metrics server not available"
-	@echo "\n--- Fargate Pods ---"
-	@kubectl get pods -n aurora-logs -o custom-columns=NAME:.metadata.name,COMPUTE:.metadata.annotations.eks\\.amazonaws\\.com/compute-type | grep -i fargate || echo "No Fargate pods running"
 
 # Clean up K8s resources
 clean:
@@ -74,6 +71,3 @@ clean:
 clean-iam:
 	@./cleanup-iam.sh
 
-# Setup Fargate profiles
-fargate:
-	@./fargate-setup.sh
