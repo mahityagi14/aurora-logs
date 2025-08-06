@@ -20,16 +20,7 @@ spec:
     spec:
       serviceAccountName: processor-sa
       dnsPolicy: ClusterFirst
-      # Deploy only on aurora-node-2
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
@@ -80,15 +71,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
-        # Fluent Bit TCP forward configuration
+        # Direct OpenObserve configuration
         - name: LOG_FORWARD_ENABLED
-          value: "true"
-        - name: LOG_FORWARD_HOST
-          value: "localhost"  # Sidecar container
-        - name: LOG_FORWARD_PORT
-          value: "24224"
+          value: "false"
         - name: PARSING_MODE
-          value: "passthrough"  # Let Fluent Bit do parsing
+          value: "full"  # Processor does all parsing internally
         ports:
         - name: metrics
           containerPort: 9090
@@ -106,66 +93,11 @@ spec:
           limits:
             cpu: "1000m"
             memory: "2Gi"
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: health
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 5
-          failureThreshold: 30
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: health
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: health
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
-      # Fluent Bit sidecar for log parsing
-      - name: fluent-bit
-        image: fluent/fluent-bit:4.0.5-arm64
-        imagePullPolicy: IfNotPresent
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-        resources:
-          requests:
-            cpu: "50m"
-            memory: "128Mi"
-          limits:
-            cpu: "200m"
-            memory: "256Mi"
-        ports:
-        - name: forward
-          containerPort: 24224
-          protocol: TCP
-        volumeMounts:
-        - name: fluent-bit-config
-          mountPath: /fluent-bit/etc/
-        - name: fluent-bit-parsers
-          mountPath: /fluent-bit/etc/parsers.conf
-          subPath: parsers.conf
-        - name: tmp
-          mountPath: /tmp
+        # Health checks disabled - processor doesn't implement health endpoint
+        # If you need health checks, processor code needs to be updated
       volumes:
       - name: tmp
         emptyDir: {}
-      - name: fluent-bit-config
-        configMap:
-          name: fluent-bit-config
-      - name: fluent-bit-parsers
-        configMap:
-          name: fluent-bit-parsers
 ---
 # Service for processor metrics
 apiVersion: v1

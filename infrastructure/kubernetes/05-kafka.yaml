@@ -22,17 +22,24 @@ spec:
     spec:
       securityContext:
         fsGroup: 1001
-        runAsUser: 1001
-      # Deploy only on aurora-node-2
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
+      # Deploy on any available node in the cluster
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "chown -R 1001:1001 /bitnami/kafka"]
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /bitnami/kafka
+          subPath: kafka
       containers:
       - name: kafka
         image: bitnami/kafka:4.0.0
@@ -51,7 +58,7 @@ spec:
         - name: KAFKA_ENABLE_KRAFT
           value: "yes"
         - name: KAFKA_CFG_NODE_ID
-          value: "1"
+          value: "0"
         - name: KAFKA_CFG_PROCESS_ROLES
           value: "controller,broker"
         - name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES
@@ -63,9 +70,9 @@ spec:
         - name: KAFKA_CFG_LISTENERS
           value: "PLAINTEXT://:9092,CONTROLLER://:9093"
         - name: KAFKA_CFG_ADVERTISED_LISTENERS
-          value: "PLAINTEXT://kafka-service.aurora-logs.svc.cluster.local:9092"
+          value: "PLAINTEXT://kafka.aurora-logs.svc.cluster.local:9092"
         - name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS
-          value: "1@localhost:9093"
+          value: "0@localhost:9093"
         - name: KAFKA_KRAFT_CLUSTER_ID
           value: "MkU3OEVBNzE0QTI2Qjk2NA"
         - name: ALLOW_PLAINTEXT_LISTENER
@@ -113,6 +120,12 @@ spec:
         - name: KAFKA_CFG_SOCKET_REQUEST_MAX_BYTES
           value: "104857600"
         
+        # Auto-create topics
+        - name: KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE
+          value: "true"
+        - name: KAFKA_CFG_NUM_PARTITIONS
+          value: "10"
+        
         ports:
         - name: kafka
           containerPort: 9092
@@ -122,41 +135,22 @@ spec:
         volumeMounts:
         - name: kafka-data
           mountPath: /bitnami/kafka
+          subPath: kafka
           
-        livenessProbe:
-          tcpSocket:
-            port: 9092
-          initialDelaySeconds: 60
-          periodSeconds: 30
-          
-        readinessProbe:
-          tcpSocket:
-            port: 9092
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          
-        # Startup probe for slow starts
-        startupProbe:
-          tcpSocket:
-            port: 9092
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          failureThreshold: 30
+        # Health checks removed - can cause issues with Kafka startup
+        # TCP checks on port 9092 may fail during initial cluster formation
           
       volumes:
       - name: kafka-data
         persistentVolumeClaim:
           claimName: kafka-data-pvc
-      
-      # Init container to format storage
-      # No init container needed for Bitnami Kafka - it handles initialization automatically
 
 ---
 # Kafka Service
 apiVersion: v1
 kind: Service
 metadata:
-  name: kafka-service
+  name: kafka
   namespace: aurora-logs
   labels:
     app: kafka
@@ -171,99 +165,3 @@ spec:
   selector:
     app: kafka
   type: ClusterIP
----
-# ConfigMap for Kafka topic creation
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: kafka-topics
-  namespace: aurora-logs
-data:
-  create-topics.sh: |
-    #!/bin/bash
-    set -e
-    
-    KAFKA_BROKER="kafka-service.aurora-logs.svc.cluster.local:9092"
-    
-    echo "Waiting for Kafka to be ready..."
-    until /opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server $KAFKA_BROKER > /dev/null 2>&1; do
-      echo "Kafka not ready, waiting..."
-      sleep 5
-    done
-    
-    echo "Creating optimized topics..."
-    
-    # Aurora error logs topic
-    /opt/bitnami/kafka/bin/kafka-topics.sh --create \
-      --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-error-logs \
-      --partitions 10 \
-      --replication-factor 1 \
-      --config retention.ms=172800000 \
-      --config retention.bytes=1073741824 \
-      --config compression.type=lz4 \
-      --config segment.ms=3600000 \
-      --if-not-exists
-    
-    # Aurora slowquery logs topic
-    /opt/bitnami/kafka/bin/kafka-topics.sh --create \
-      --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-slowquery-logs \
-      --partitions 10 \
-      --replication-factor 1 \
-      --config retention.ms=86400000 \
-      --config retention.bytes=1073741824 \
-      --config compression.type=lz4 \
-      --config segment.ms=3600000 \
-      --if-not-exists
-    
-    # Dead letter queue for error logs
-    /opt/bitnami/kafka/bin/kafka-topics.sh --create \
-      --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-error-logs-dlq \
-      --partitions 3 \
-      --replication-factor 1 \
-      --config retention.ms=604800000 \
-      --config compression.type=lz4 \
-      --if-not-exists
-    
-    # Dead letter queue for slowquery logs
-    /opt/bitnami/kafka/bin/kafka-topics.sh --create \
-      --bootstrap-server $KAFKA_BROKER \
-      --topic aurora-slowquery-logs-dlq \
-      --partitions 3 \
-      --replication-factor 1 \
-      --config retention.ms=604800000 \
-      --config compression.type=lz4 \
-      --if-not-exists
-    
-    echo "Topics created successfully!"
-    
-    # List topics
-    /opt/bitnami/kafka/bin/kafka-topics.sh --list --bootstrap-server $KAFKA_BROKER
-
----
-# Job to create topics
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: kafka-topics
-  namespace: aurora-logs
-spec:
-  template:
-    spec:
-      restartPolicy: OnFailure
-      containers:
-      - name: kafka-topics
-        image: bitnami/kafka:4.0.0
-        command:
-        - sh
-        - /scripts/create-topics.sh
-        volumeMounts:
-        - name: scripts
-          mountPath: /scripts
-      volumes:
-      - name: scripts
-        configMap:
-          name: kafka-topics
-          defaultMode: 0755

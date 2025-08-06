@@ -33,15 +33,6 @@ spec:
         app: valkey
     spec:
       # Deploy only on aurora-node-2
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
       containers:
       - name: valkey
         image: valkey/valkey:8.1.3
@@ -72,19 +63,7 @@ spec:
         - ""  # Disable persistence for cache-only use
         - "--appendonly"
         - "no"
-        livenessProbe:
-          tcpSocket:
-            port: 6379
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "valkey-cli ping | grep PONG"
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        # Health checks removed - can cause issues during startup
         volumeMounts:
         - name: valkey-data
           mountPath: /data

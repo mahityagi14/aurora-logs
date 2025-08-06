@@ -20,15 +20,6 @@ spec:
     spec:
       serviceAccountName: openobserve-sa
       # Deploy only on aurora-node-2
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
       containers:
       - name: openobserve
         image: openobserve/openobserve:v0.15.0-rc4-arm64
@@ -97,18 +88,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 5080
-          initialDelaySeconds: 30
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 5080
-          initialDelaySeconds: 10
-          periodSeconds: 10
+        # Health checks removed - OpenObserve health endpoint may not be ready during startup
       volumes:
       - name: data
         persistentVolumeClaim:

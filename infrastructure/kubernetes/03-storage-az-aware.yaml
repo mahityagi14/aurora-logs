@@ -1,0 +1,34 @@
+---
+# Storage configuration with AZ awareness
+# This template will be processed by deploy script to add allowedTopologies
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openobserve-data-pvc
+  namespace: aurora-logs
+  labels:
+    app: openobserve
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data-pvc
+  namespace: aurora-logs
+  labels:
+    app: kafka
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi

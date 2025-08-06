@@ -1,5 +1,5 @@
 ---
-# Application Configuration with Fluent Bit Integration
+# Application Configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,7 +25,7 @@ data:
   AWS_REGION: "us-east-1"
   AWS_SDK_LOAD_CONFIG: "true"
   
-  # OpenObserve Configuration (Direct - for fallback)
+  # OpenObserve Configuration (Direct)
   OPENOBSERVE_URL: "http://openobserve-service.aurora-logs.svc.cluster.local:5080"
   OPENOBSERVE_ORG: "default"
   OPENOBSERVE_STREAM: "aurora_logs"
@@ -33,17 +33,8 @@ data:
   OPENOBSERVE_SLOWQUERY_STREAM: "aurora_slowquery_logs"
   # OpenObserve will use _timestamp field for log timestamps (preserving Aurora timestamps)
   
-  # Fluent Bit Integration
-  LOG_FORWARD_ENABLED: "false"
-  LOG_FORWARD_HOST: "fluentbit.aurora-logs.svc.cluster.local"
-  LOG_FORWARD_PORT: "24224"
-  PARSING_MODE: "full"  # Options: passthrough, minimal, full
-  # passthrough: Send raw logs to Fluent Bit for parsing
-  # minimal: Extract basic fields, send rest to Fluent Bit
-  # full: Use processor parsing (fallback mode)
-  
   # Kafka Configuration
-  KAFKA_BROKERS: "kafka-service.aurora-logs.svc.cluster.local:9092"
+  KAFKA_BROKERS: "kafka.aurora-logs.svc.cluster.local:9092"
   KAFKA_ERROR_TOPIC: "aurora-error-logs"
   KAFKA_SLOWQUERY_TOPIC: "aurora-slowquery-logs"
   KAFKA_PARTITION_COUNT: "10"

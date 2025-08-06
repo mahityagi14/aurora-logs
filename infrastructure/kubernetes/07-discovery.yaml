@@ -20,16 +20,7 @@ spec:
     spec:
       serviceAccountName: discovery-sa
       dnsPolicy: ClusterFirst
-      # Deploy only on aurora-node-2
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: eks.amazonaws.com/nodegroup
-                operator: In
-                values:
-                - aurora-node-2
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
